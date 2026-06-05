@@ -40,15 +40,16 @@ pip install -r requirements.txt -q
 
 echo Configuring .env...
 (
-    echo DB_HOST=localhost
-    echo DB_NAME=home_automation
-    echo DB_USER=postgres
-    echo DB_PASSWORD=your_password
-    echo DB_PORT=5432
+    echo # Database ^(SQLite — file-based, no server needed^)
+    echo DB_PATH=../home_automation.db
+    echo.
+    echo # API
     echo API_HOST=0.0.0.0
     echo API_PORT=8000
     echo LOG_LEVEL=INFO
-    echo MODEL_PATH=../model.pkl
+    echo.
+    echo # Model
+    echo MODEL_PATH=../home_automation_model.pkl
     echo RETRAIN_INTERVAL_DAYS=7
 ) > .env
 

@@ -142,9 +142,48 @@ function ConfidenceBar({ value, color }) {
   );
 }
 
+// ── HomeAwayCard ─────────────────────────────────────────────────
+function HomeAwayCard({ isHome, onToggle }) {
+  const [loading, setLoading] = useState(false);
+
+  const toggle = async () => {
+    setLoading(true);
+    await onToggle(!isHome);
+    setLoading(false);
+  };
+
+  return (
+    <div className={`home-away-card ${isHome ? 'hac-home' : 'hac-away'}`}>
+      <div className="hac-left">
+        <div className="hac-icon-wrap">
+          <span className="hac-icon">{isHome ? '🏠' : '✈️'}</span>
+          {isHome && <span className="hac-pulse" />}
+        </div>
+        <div className="hac-body">
+          <div className="hac-mode-label">Presence Mode</div>
+          <div className="hac-status">{isHome ? 'You are HOME' : 'You are AWAY'}</div>
+          <div className="hac-sub">
+            {isHome
+              ? 'AI managing all devices normally'
+              : '❄️ AC · 🌀 Fan · 💡 Light · 📺 TV are OFF — 🧊 Fridge stays ON'}
+          </div>
+        </div>
+      </div>
+      <button
+        id="home-away-toggle-btn"
+        className={`hac-btn ${isHome ? 'hac-btn-leave' : 'hac-btn-return'}`}
+        onClick={toggle}
+        disabled={loading}
+      >
+        {loading ? '···' : isHome ? '🚪 Leave Home' : '🏠 I\'m Back'}
+      </button>
+    </div>
+  );
+}
+
 // ── Pages ─────────────────────────────────────────────────────────
 
-function DashboardPage({ devices, systemStatus, weather }) {
+function DashboardPage({ devices, systemStatus, weather, isHome, onHomeToggle }) {
   const online = devices.filter(d => d.status).length;
   const energy = devices.reduce((s,d) => s + (d.status ? d.energy_consumption*0.001 : 0), 0);
   const acc    = systemStatus?.model?.accuracy ?? 0;
@@ -157,6 +196,10 @@ function DashboardPage({ devices, systemStatus, weather }) {
         <h1 className="page-title">Dashboard <span className="title-chip">LIVE</span></h1>
         <div className="page-time">{new Date().toLocaleString()}</div>
       </div>
+
+      {/* ── Home / Away banner ── */}
+      <HomeAwayCard isHome={isHome} onToggle={onHomeToggle} />
+
       <div className="stat-grid">
         <StatCard icon="🔌" label="Devices Online"  value={`${online}/${devices.length}`} sub="Active now"    accent="#6C63FF" />
         <StatCard icon="⚡" label="Total Energy"     value={`${energy.toFixed(1)} kWh`}    sub="Current load" accent="#00D4FF" />
@@ -551,6 +594,7 @@ export default function App() {
   const [error, setError]         = useState(null);
   const [unread, setUnread]       = useState(0);
   const [nightMode, setNightMode] = useState(true); // deep-night block default ON
+  const [isHome, setIsHome]       = useState(true); // presence mode: true = home
 
   // ── ALL HOOKS must come before any early return ──────────────────
   const refreshUnread = useCallback(() => {
@@ -593,6 +637,8 @@ export default function App() {
     refreshUnread();
     // Load deep-night mode state from backend
     fetch(`${API}/settings/night-mode`).then(r=>r.json()).then(d=>setNightMode(d.enabled)).catch(()=>{});
+    // Load home/away status from backend
+    fetch(`${API}/home/status`).then(r=>r.json()).then(d=>setIsHome(d.is_home)).catch(()=>{});
     // Poll devices + unread every 5s; unread count separately every 3s for near-instant notification badge
     const t5 = setInterval(() => {
       refreshDevices();
@@ -650,6 +696,20 @@ export default function App() {
     } catch { setError('Failed to update deep-night mode'); }
   };
 
+  const handleHomeToggle = async (newIsHome) => {
+    try {
+      const r = await fetch(`${API}/home/status`, {
+        method: 'POST', headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({ is_home: newIsHome }),
+      });
+      const d = await r.json();
+      setIsHome(d.is_home);
+      // Refresh devices + badge immediately so OFF state appears without waiting
+      refreshDevices();
+      refreshUnread();
+    } catch { setError('Failed to update home/away status'); }
+  };
+
   if (loading) return (
     <div className="app-loading">
       <div className="spinner" />
@@ -664,7 +724,7 @@ export default function App() {
         {error && (
           <div className="error-bar">⚠️ {error}<button onClick={()=>setError(null)}>✕</button></div>
         )}
-        {page==='dashboard'     && <DashboardPage devices={devices} systemStatus={systemStatus} weather={weather} />}
+        {page==='dashboard'     && <DashboardPage devices={devices} systemStatus={systemStatus} weather={weather} isHome={isHome} onHomeToggle={handleHomeToggle} />}
         {page==='devices'       && <DevicesPage devices={devices} onToggle={handleToggle} onOverrideDuration={handleOverrideDuration} />}
         {page==='predictions'   && <PredictionsPage />}
         {page==='analytics'     && <AnalyticsPage analytics={analytics} />}

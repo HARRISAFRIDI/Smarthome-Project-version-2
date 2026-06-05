@@ -10,6 +10,7 @@
 🔔 **Notifications Page** — 24h persistent event log (Manual + AI actions) stored in SQLite  
 🔒 **Smart Override** — User manually overrides AI; AI locked for configurable **5–60 min**  
 ⚡ **Per-device Lock Duration** — Each device has its own adjustable override timer (slider)  
+🌡️ **Temperature-Based Rules** — Custom rules DB enforces device actions per temperature range  
 🗄️ **SQLite Database** — Zero-config, file-based, no server needed (`home_automation.db`)  
 📱 **Responsive UI** — Works on desktop, tablet, mobile  
 
@@ -22,29 +23,20 @@
 - Node.js 16+  
 - **No database server required** — uses SQLite (built into Python)
 
-### 1. Train ML Model (if `home_automation_model.pkl` missing)
+### 1. Train ML Model (first time only)
 
 ```bash
-# Run Jupyter notebook
+# Run the Jupyter notebook to generate home_automation_model.pkl
 jupyter notebook 2024_dataset_training_model.ipynb
-# This creates home_automation_model.pkl in root directory
 ```
 
-### 2. Train ML Model (if not done)
-
-```bash
-# Run Jupyter notebook
-jupyter notebook 2024_dataset_training_model.ipynb
-
-# This creates model.pkl in root directory
-```
-
-### 3. Start Backend
+### 2. Start Backend
 
 ```bash
 cd backend
 python -m venv venv
-source venv/bin/activate  # Windows: venv\Scripts\activate
+venv\Scripts\activate        # Windows
+# source venv/bin/activate   # Linux/Mac
 pip install -r requirements.txt
 python main.py
 ```
@@ -52,7 +44,7 @@ python main.py
 **Backend runs at**: http://localhost:8000  
 **API Docs at**: http://localhost:8000/docs
 
-### 4. Start Frontend
+### 3. Start Frontend
 
 ```bash
 cd frontend
@@ -68,48 +60,36 @@ npm start
 
 ```
 ┌────────────────────────────────────────────┐
-│          FRONTEND DASHBOARD (React)           │
-│   Device Status | Control | Notifications     │
-└───────────────────┬───────────────────────┘
+│          FRONTEND DASHBOARD (React)         │
+│   Device Status | Control | Notifications   │
+└───────────────────┬─────────────────────────┘
                      │ REST API (polling)
                      ▼
 ┌────────────────────────────────────────────┐
-│         BACKEND API (FastAPI v4.0)            │
-│  5-Node Agent Loop (runs every 60s)           │
-└──────────────┬──────────────────────┬─────────┘
-                 │                      │
-                 ▼                      ▼
-         ┌──────────────┐        ┌──────────────┐
-         │ RF ML MODEL   │        │ SQLite DB      │
-         │ (.pkl joblib) │        │ home_auto.db   │
-         └──────────────┘        └──────────────┘
+│         BACKEND API (FastAPI v4.0)          │
+│  5-Node Agent Loop (runs every 60s)         │
+└──────────────┬──────────────────────┬───────┘
+               │                      │
+               ▼                      ▼
+       ┌──────────────┐        ┌──────────────┐
+       │ RF ML MODEL  │        │ SQLite DB     │
+       │ (.pkl joblib)│        │ home_auto.db  │
+       └──────────────┘        └──────────────┘
 ```
 
 ---
 
-## 🧠 AI Agent Architecture (LangGraph-style)
+## 🧠 AI Agent Architecture
 
 ### Node Pipeline
 
 ```
-1. HISTORY NODE
-   └─ Fetch recent device usage from DB
-
-2. PREDICT NODE  
-   └─ ML model predicts ON/OFF with confidence
-
-3. RULE ENGINE NODE
-   └─ Apply  domain-specific rules
-
-
-5. DECISION ENGINE
-   └─ Combine all signals with priorities
-
-6. CONTROL NODE
-   └─ Update device state (simulate ON/OFF)
-
-7. LOGGING NODE
-   └─ Save decision to DB for learning
+1. HISTORY NODE     → Fetch recent device usage from DB
+2. PREDICT NODE     → ML model predicts ON/OFF with confidence
+3. RULE ENGINE      → Apply temperature-based + domain rules
+4. DECISION ENGINE  → Combine all signals with priorities
+5. CONTROL NODE     → Update device state
+6. LOGGING NODE     → Save decision to DB for learning
 ```
 
 ### Priority System
@@ -124,10 +104,32 @@ Default OFF          0
 
 ---
 
+## 🌡️ Temperature Rules System
+
+Custom rules are stored in the `custom_rules` SQLite table and override AI predictions:
+
+| Temperature | AC | Fan | Reason |
+|-------------|-----|-----|--------|
+| 0–25°C | OFF | OFF | Comfortable |
+| 25–30°C | OFF | OFF | Slightly warm |
+| 30–40°C | OFF | ON | Fan-only (energy efficient) |
+| 40–50°C | ON | ON | Full cooling |
+| 50°C+ | ON | ON | Extreme heat |
+
+Manage rules via REST API:
+```
+GET    /api/rules              → View all rules
+POST   /api/rules              → Create rule
+PUT    /api/rules/{id}         → Update rule
+DELETE /api/rules/{id}         → Delete rule
+```
+
+---
+
 ## 📊 Integrated Rule Engine (8 Rules)
 
 ```python
-Rule 1:  temp > 30°C        → AC ON, Fan ON
+Rule 1:  temp > 30°C        → AC ON, Fan ON (baseline; custom rules may override)
 Rule 2:  temp < 25°C        → AC OFF
 Rule 3:  18:00-07:00 (night) → Lights ON
 Rule 4:  07:00-18:00 (day)  → Lights OFF
@@ -145,75 +147,20 @@ Rule 8:  Always             → Fridge ON
 |----------|--------|---------|
 | `/api/devices/status` | GET | All device states |
 | `/api/devices/{id}` | GET | Device detail + lock info |
-| `/api/device/control` | POST | Turn ON/OFF + set lock duration |
-| `/api/device/override-duration` | POST | Change per-device AI lock (5–60 min) |
+| `/api/device/control` | POST | Turn ON/OFF + set lock duration (5–60 min) |
+| `/api/device/override-duration` | POST | Change per-device AI lock |
 | `/api/current-prediction` | GET | Live RF model prediction |
 | `/api/analytics` | GET | System-wide analytics |
-| `/api/history` | GET | 14-day device history (SQLite) |
+| `/api/history` | GET | 14-day device history |
 | `/api/history/daily` | GET | Daily ON-count aggregation |
 | `/api/notifications/24h` | GET | Last 24h events from SQLite |
 | `/api/notifications/read-all` | POST | Mark all notifications read |
 | `/api/notifications/unread-count` | GET | Unread badge count |
+| `/api/rules` | GET/POST/PUT/DELETE | Temperature-based rule management |
 | `/api/agent/status` | GET | Agent cycle trace + manual locks |
 | `/api/system/status` | GET | Health check (DB: SQLite) |
 
 **Full Docs**: http://localhost:8000/docs (Swagger UI)
-
----
-
-## 📈 Continuous Learning System
-
-### Weekly Retraining Cycle
-
-```
-Collect Data (7 days)
-    ↓
-Compare Predictions vs Actions
-    ↓
-Calculate feedback signal
-    ↓
-Retrain model
-    ↓
-Evaluate accuracy
-    ↓
-Save improved model
-    ↓
-Monitor user overrides
-```
-
-### Performance Tracking
-
-- **Stores**: Every prediction + actual outcome
-- **Analyzes**: AI vs human behavior
-- **Improves**: Weekly model retraining
-- **Logs**: Training history with metrics
-
----
-
-## 🎨 Dashboard Features
-
-### Device Control Panel
-- Real-time ON/OFF status
-- Manual override buttons
-- Energy consumption display
-- Last updated timestamp
-
-### Environmental Controls
-- Temperature slider (0-40°C)
-- Humidity slider (0-100%)
-- AI prediction button
-
-### Analytics Dashboard
-- Device accuracy chart
-- Energy consumption graph
-- System stats (total devices, online count)
-- Model performance metrics
-
-### Real-time Updates
-- WebSocket for live data
-- 30-second refresh interval
-- Connected client count
-- Device status broadcasting
 
 ---
 
@@ -222,17 +169,8 @@ Monitor user overrides
 ```
 Smarthome Project version 2/
 │
-├── database/
-│   ├── schema.sql              # PostgreSQL database schema
-│   └── db_manager.py           # Database utilities & managers
-│
-├── ml_agent/
-│   ├── agent.py                # LangGraph-style agent
-│   ├── continuous_learning.py  # Auto-retraining system
-│   └── __init__.py
-│
 ├── backend/
-│   ├── main.py                 # FastAPI application
+│   ├── main.py                 # FastAPI application (5-Node Agent)
 │   ├── requirements.txt        # Python dependencies
 │   └── .env                    # Configuration
 │
@@ -240,20 +178,26 @@ Smarthome Project version 2/
 │   ├── src/
 │   │   ├── App.jsx             # Main React component
 │   │   ├── App.css             # Styling
+│   │   ├── AuthPage.jsx        # Login/Signup page
+│   │   ├── PowerConsumption.jsx # Energy analytics
 │   │   └── index.js
 │   ├── package.json            # Node dependencies
-│   ├── .env                    # Configuration
-│   └── public/
+│   └── .env                    # Configuration
 │
 ├── scripts/
-│   ├── setup.sh                # One-time setup
-│   └── run.sh                  # Start all services
+│   ├── setup.bat / setup.sh    # One-time setup
+│   └── run.bat / run.sh        # Start all services
 │
-├── 2024_dataset_training_model.ipynb  # ML training
-├── home_automation_dataset_2024.csv   # Dataset
+├── home_automation.db                  # SQLite database (auto-created)
+├── home_automation_model.pkl           # Trained ML model
+├── home_automation_dataset_2024.csv    # Dataset
+├── 2024_dataset_training_model.ipynb   # ML training notebook
+├── generate_realistic_data.py          # Data generation script
+├── check_db.py                         # Database inspector utility
 │
-├── SETUP_GUIDE.md              # Detailed setup instructions
-├── README.md                   # This file
+├── README.md                   # This file — project overview
+├── SETUP_GUIDE.md              # Detailed setup & troubleshooting
+├── ARCHITECTURE.md             # System architecture diagrams
 └── .gitignore
 ```
 
@@ -264,12 +208,8 @@ Smarthome Project version 2/
 ### Backend `.env`
 
 ```env
-# Database
-DB_HOST=localhost
-DB_NAME=home_automation
-DB_USER=postgres
-DB_PASSWORD=your_password
-DB_PORT=5432
+# Database (SQLite — file-based, no server needed)
+DB_PATH=../home_automation.db
 
 # API
 API_HOST=0.0.0.0
@@ -277,11 +217,8 @@ API_PORT=8000
 LOG_LEVEL=INFO
 
 # Model
-MODEL_PATH=../model.pkl
+MODEL_PATH=../home_automation_model.pkl
 RETRAIN_INTERVAL_DAYS=7
-
-# Frontend
-FRONTEND_URL=http://localhost:3000
 ```
 
 ### Frontend `.env`
@@ -293,44 +230,14 @@ REACT_APP_WS_URL=ws://localhost:8000/ws
 
 ---
 
-## 🧪 Testing
-
-### Test Database Connection
-
-```bash
-cd backend
-python -c "from database.db_manager import DatabaseConnection; db = DatabaseConnection(); db.connect()"
-```
-
-### Test ML Model
-
-```bash
-python -c "import joblib; model = joblib.load('../model.pkl'); print(model)"
-```
-
-### Test API
-
-```bash
-curl http://localhost:8000/health
-curl http://localhost:8000/docs
-```
-
-### Test Frontend
-
-```bash
-npm test  # Run React tests
-```
-
----
-
 ## 🐛 Troubleshooting
 
 **Model not found?**
-- Train using notebook first
+- Train using notebook first: `jupyter notebook 2024_dataset_training_model.ipynb`
 - Ensure `home_automation_model.pkl` exists in root
 
 **Port already in use?**
-```bash
+```powershell
 # Windows PowerShell
 Get-Process -Id (Get-NetTCPConnection -LocalPort 8000).OwningProcess | Stop-Process
 ```
@@ -344,91 +251,37 @@ Get-Process -Id (Get-NetTCPConnection -LocalPort 8000).OwningProcess | Stop-Proc
 - Use the ⏱ button on a device card to change the lock to 5–60 min
 - Check `GET /api/agent/status` for `manual_locks` dict
 
+**Rules not applying?**
+- Verify rules exist: `curl http://localhost:8000/api/rules`
+- Wait 1+ minutes for next agent cycle
+- Check backend logs for `[CUSTOM_RULE]` messages
+
 See [SETUP_GUIDE.md](SETUP_GUIDE.md) for comprehensive troubleshooting.
 
 ---
 
 ## 📚 Documentation
 
-- **[SETUP_GUIDE.md](SETUP_GUIDE.md)** - Detailed setup & installation
-- **[SQL Schema](database/schema.sql)** - Database structure
-- **[Agent Code](ml_agent/agent.py)** - AI agent architecture
-- **[API Docs](http://localhost:8000/docs)** - Interactive API reference
-- **Code Comments** - Comprehensive comments in all files
+- **[README.md](README.md)** — Project overview (this file)
+- **[SETUP_GUIDE.md](SETUP_GUIDE.md)** — Detailed setup & installation
+- **[ARCHITECTURE.md](ARCHITECTURE.md)** — System architecture diagrams & data flows
 
 ---
 
-## 🎓 Learning Resources
+## 🎓 Tech Stack
 
-### Machine Learning
-- Dataset: 5000+ device usage samples
-- Model: Multi-output RandomForest classifier
-- Features: Time, temperature, humidity, day patterns
-- Output: 5 devices (AC, Fan, Light, TV, Fridge)
-
-### Agent Architecture
-- LangGraph-inspired node design
-- Priority-based decision making
-- Fallback mechanisms
-- Error handling & logging
-
-### Web Stack
-- **Frontend**: React 18 (Vite/CRA)
-- **Backend**: FastAPI 4.0 + asyncio agent loop
-- **Database**: **SQLite** (`home_automation.db`) — built-in Python, zero config
-  - Tables: `two_week_logs`, `agent_logs`, `notifications`
+- **Frontend**: React 18 (Create React App)
+- **Backend**: FastAPI + asyncio agent loop
+- **Database**: SQLite (`home_automation.db`) — built-in Python, zero config
+  - Tables: `two_week_logs`, `agent_logs`, `notifications`, `custom_rules`
 - **ML**: Scikit-learn RandomForest + Joblib
-
----
-
-## 🚀 Deployment
-
-### Local Development (Current)
-```bash
-npm run dev      # Frontend with hot reload
-python main.py  # Backend with auto-reload
-```
-
-### Production Build
-```bash
-# Frontend
-cd frontend
-npm run build
-# Outputs to build/ folder
-
-# Backend
-cd backend
-uvicorn main:app --host 0.0.0.0 --port 8000
-
-# Serve with nginx/Apache
-```
-
-### Cloud Deployment
-```
-Consider: AWS (EC2), Azure (App Service), GCP (Cloud Run)
-Or: Docker + Kubernetes for scaling
-```
 
 ---
 
 ## 📝 License & Credits
 
-**Final Year Project** - Educational Purpose  
-**Version**: 1.0.0  
-**Status**: ✅ Complete Architecture  
+**Final Year Project** — Educational Purpose  
+**Version**: 4.0.0  
+**Status**: ✅ Complete  
 
----
-
-## 🤝 Support
-
-For issues or questions:
-1. Check [SETUP_GUIDE.md](SETUP_GUIDE.md)
-2. Review code comments
-3. Check API documentation at `/docs`
-4. Inspect backend/frontend logs
-
----
-
-**Built with ❤️ for intelligent home automation**
-
-Last Updated: 2026-05-11 | Version 4.0.0
+Last Updated: 2026-06-05

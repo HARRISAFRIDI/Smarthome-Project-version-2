@@ -1,4 +1,4 @@
-# 🏠 AI Home Automation System - Architecture Diagram
+# 🏠 AI Home Automation System — Architecture Diagram
 
 ## System Architecture Overview
 
@@ -50,7 +50,7 @@
 ├──────────────────────────────────────────────────────────────────┤
 │                                                                   │
 │  ┌───────────────────────────────────────────────────────┐      │
-│  │         AI AGENT (6-Node Pipeline)                   │      │
+│  │         AI AGENT (5-Node Pipeline)                   │      │
 │  ├───────────────────────────────────────────────────────┤      │
 │  │                                                       │      │
 │  │  1. HistoryNode ──┐                                 │      │
@@ -98,9 +98,10 @@
 │  ├────────────────────────────────────────────────────────┤     │
 │  │                                                        │     │
 │  │  Tables:                                             │     │
-│  │  • two_week_logs          (14-day device history)     │     │
-│  │  • agent_logs             (AI agent action log)       │     │
-│  │  • notifications          (24h event store, NEW)      │     │
+│  │  • two_week_logs     (14-day device state history)   │     │
+│  │  • agent_logs        (AI agent autonomous decisions) │     │
+│  │  • notifications     (24h event log — persistent)   │     │
+│  │  • custom_rules      (temperature-based rules)       │     │
 │  │                                                        │     │
 │  │  Key columns in notifications:                       │     │
 │  │    id, timestamp, device, action, reason,            │     │
@@ -116,7 +117,7 @@
 
 ---
 
-## Data Flow Diagram (6-Node Pipeline)
+## Data Flow Diagram (5-Node Pipeline)
 
 ```
 DEVICE STATE
@@ -171,7 +172,7 @@ DEVICE STATE
 
 ---
 
-## Decision Priority System (6-Node Pipeline)
+## Decision Priority System
 
 ```
 INPUT: Device context (current time, temperature, humidity, etc)
@@ -255,7 +256,11 @@ Device: Fridge
 backend/main.py (FastAPI)
     │
     ├─ sqlite3 (Python built-in — no external DB server needed)
-    │   └─→ home_automation.db (3 tables: two_week_logs, agent_logs, notifications)
+    │   └─→ home_automation.db
+    │         • two_week_logs   (14-day history)
+    │         • agent_logs      (AI decisions)
+    │         • notifications   (24h event log)
+    │         • custom_rules    (temperature-based rules)
     │
     ├─ joblib (load home_automation_model.pkl)
     │
@@ -444,7 +449,8 @@ This architecture provides:
 |---|---|---|
 | `two_week_logs` | 14-day device state history | device_id, device_name, timestamp, action, energy_wh |
 | `agent_logs` | AI agent autonomous decisions | device_id, action, confidence, reason, timestamp |
-| `notifications` | 24h event log (manual + AI) — **NEW** | device, action, reason, node, confidence, read, timestamp |
+| `notifications` | 24h event log (manual + AI) | device, action, reason, node, confidence, read, timestamp |
+| `custom_rules` | Temperature-based automation rules | device_id, temp_min, temp_max, action, enabled, description |
 
 **Override Lock System:**
 - Default AI lock after manual override: **30 minutes**

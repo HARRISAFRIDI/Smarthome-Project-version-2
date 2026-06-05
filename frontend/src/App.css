@@ -966,3 +966,63 @@ body {
   border-color: rgba(0,230,118,0.35);
   color: var(--green);
 }
+
+/* ── Home / Away Presence Card ─────────────────────────────── */
+.home-away-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1.25rem;
+  border-radius: var(--radius);
+  padding: 1.25rem 1.75rem;
+  margin-bottom: 1.75rem;
+  border: 1.5px solid;
+  position: relative;
+  overflow: hidden;
+  transition: box-shadow 0.3s, border-color 0.3s;
+  animation: fadeIn 0.3s ease;
+}
+.hac-home {
+  background: linear-gradient(135deg, rgba(0,230,118,0.10) 0%, rgba(0,212,255,0.06) 100%);
+  border-color: rgba(0,230,118,0.35);
+  box-shadow: 0 4px 24px rgba(0,230,118,0.10);
+}
+.hac-home:hover { box-shadow: 0 8px 36px rgba(0,230,118,0.18); }
+.hac-away {
+  background: linear-gradient(135deg, rgba(255,82,82,0.10) 0%, rgba(255,215,64,0.06) 100%);
+  border-color: rgba(255,82,82,0.35);
+  box-shadow: 0 4px 24px rgba(255,82,82,0.10);
+}
+.hac-away:hover { box-shadow: 0 8px 36px rgba(255,82,82,0.18); }
+.hac-left { display: flex; align-items: center; gap: 1.25rem; flex: 1; }
+.hac-icon-wrap { position: relative; flex-shrink: 0; }
+.hac-icon  { font-size: 2.6rem; line-height: 1; display: block; }
+.hac-pulse {
+  position: absolute; bottom: 0; right: 0;
+  width: 12px; height: 12px;
+  background: var(--green); border-radius: 50%; border: 2px solid var(--bg);
+  animation: pulse 1.8s infinite;
+}
+.hac-body       { display: flex; flex-direction: column; gap: 0.2rem; }
+.hac-mode-label { font-size: 0.68rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.1em; color: var(--text-dim); }
+.hac-status     { font-size: 1.15rem; font-weight: 800; color: var(--text); }
+.hac-sub        { font-size: 0.78rem; color: var(--text-dim); }
+.hac-btn {
+  flex-shrink: 0;
+  padding: 0.65rem 1.6rem; border-radius: 99px; border: 1.5px solid;
+  font-family: 'Inter', sans-serif; font-size: 0.875rem; font-weight: 700;
+  cursor: pointer; transition: all 0.2s; white-space: nowrap;
+}
+.hac-btn:disabled { opacity: 0.55; cursor: not-allowed; }
+.hac-btn-leave {
+  background: rgba(255,82,82,0.12); border-color: var(--red); color: var(--red);
+}
+.hac-btn-leave:hover:not(:disabled) { background: rgba(255,82,82,0.25); transform: scale(1.04); }
+.hac-btn-return {
+  background: rgba(0,230,118,0.12); border-color: var(--green); color: var(--green);
+}
+.hac-btn-return:hover:not(:disabled) { background: rgba(0,230,118,0.25); transform: scale(1.04); }
+@media (max-width: 600px) {
+  .home-away-card { flex-direction: column; align-items: flex-start; }
+  .hac-btn        { width: 100%; text-align: center; }
+}

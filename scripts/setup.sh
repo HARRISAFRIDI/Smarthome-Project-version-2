@@ -22,25 +22,12 @@ if ! command -v node &> /dev/null; then
     exit 1
 fi
 
-if ! command -v psql &> /dev/null; then
-    echo "❌ PostgreSQL not found. Please install PostgreSQL 12+"
-    exit 1
-fi
-
 echo "✅ All prerequisites found"
 echo ""
 
-# Setup Database
-echo "📦 Setting up Database..."
-read -p "PostgreSQL password: " db_password
-
-# Create database
-psql -U postgres -c "CREATE DATABASE home_automation;" 2>/dev/null || echo "Database may already exist"
-
-# Apply schema
-psql -U postgres -d home_automation -f database/schema.sql
-
-echo "✅ Database setup complete"
+# Database info
+echo "📦 Database: SQLite (no setup needed)"
+echo "   The database file home_automation.db is created automatically."
 echo ""
 
 # Setup Backend
@@ -62,15 +49,16 @@ pip install -r requirements.txt
 # Update .env file
 echo "Configuring .env..."
 cat > .env << EOF
-DB_HOST=localhost
-DB_NAME=home_automation
-DB_USER=postgres
-DB_PASSWORD=$db_password
-DB_PORT=5432
+# Database (SQLite — file-based, no server needed)
+DB_PATH=../home_automation.db
+
+# API
 API_HOST=0.0.0.0
 API_PORT=8000
 LOG_LEVEL=INFO
-MODEL_PATH=../model.pkl
+
+# Model
+MODEL_PATH=../home_automation_model.pkl
 RETRAIN_INTERVAL_DAYS=7
 EOF
 
