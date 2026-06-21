@@ -36,6 +36,7 @@ async def start_autonomous_agent(
     is_manually_locked_func: Callable,
     log_agent_action_func: Callable,
     push_notification_func: Callable,
+    weather_cache: Dict = None,
 ) -> None:
     """
     Main autonomous agent loop.
@@ -65,6 +66,7 @@ async def start_autonomous_agent(
         is_manually_locked_func: Function to check manual locks
         log_agent_action_func: Function to log actions to DB
         push_notification_func: Function to send notifications
+        weather_cache: Weather cache dict with sunrise_hour and sunset_hour
     """
     agent_status["running"] = True
     logger.info("[AGENT] Autonomous agent loop started (180s / 3-minute interval)")
@@ -87,6 +89,8 @@ async def start_autonomous_agent(
             )
 
             # ── Node 2: Rule Engine ────────────────────────────
+            sunrise_hour = weather_cache.get("sunrise_hour") if weather_cache else None
+            sunset_hour = weather_cache.get("sunset_hour") if weather_cache else None
             rule_checked = node2_rule_engine(
                 predictions,
                 now,
@@ -100,6 +104,8 @@ async def start_autonomous_agent(
                 target_names,
                 confidence_threshold,
                 get_custom_rules_func,
+                sunrise_hour,
+                sunset_hour,
             )
             approved_count = sum(1 for r in rule_checked if r["approved"])
             node_log.append(

@@ -86,12 +86,15 @@ def node2_rule_engine(
     target_names: dict,
     confidence_threshold: float,
     get_custom_rules_func,
+    sunrise_hour: int = None,
+    sunset_hour: int = None,
 ) -> List[Dict]:
     """
     Node 2 — Apply business rules to filter/modify predictions.
     
     Rules applied:
     - Confidence threshold
+    - Daylight hours blocking (Light) - don't turn on between sunrise and sunset
     - Night-time blocking (Light, TV)
     - Smart peak hours (AC)
     - Away mode blocking
@@ -166,6 +169,20 @@ def node2_rule_engine(
             result["approved"] = False
             result["rule_reason"] = (
                 f"NIGHT_BLOCK ({target_names[did]} OFF — sleep hours, blocked 23:00-03:59)"
+            )
+
+        # Rule 2c: Daylight hours block (Light) - don't turn on Light between sunrise and sunset
+        elif (
+            did == 3  # Light device
+            and pred is True
+            and sunrise_hour is not None
+            and sunset_hour is not None
+            and sunrise_hour <= hour < sunset_hour
+        ):
+            result["approved"] = False
+            result["rule_reason"] = (
+                f"DAYLIGHT_BLOCK (Light OFF — natural daylight available, "
+                f"sunrise={sunrise_hour:02d}:00, sunset={sunset_hour:02d}:00)"
             )
 
         # Rule 3: Away mode

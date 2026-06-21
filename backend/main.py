@@ -14,6 +14,25 @@ import urllib.request, urllib.error
 import numpy as np
 import joblib
 
+# ── Load .env variables ────────────────────────────────────────
+try:
+    from dotenv import load_dotenv
+    load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env"))
+except ImportError:
+    pass
+
+# ── Voice Command Processing ───────────────────────────────────
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+try:
+    from services.voice_processor import VoiceCommandProcessor
+    VOICE_PROCESSOR = VoiceCommandProcessor()
+    logger_placeholder = logging.getLogger(__name__)
+    logger_placeholder.info("[OK] Local VoiceCommandProcessor imported")
+except Exception as e:
+    VOICE_PROCESSOR = None
+    logger_placeholder = logging.getLogger(__name__)
+    logger_placeholder.warning(f"[WARN] Could not load VoiceCommandProcessor: {e}")
+
 # ── Logging ────────────────────────────────────────────────────
 logging.basicConfig(
     level=logging.INFO,
@@ -47,11 +66,11 @@ app.add_middleware(
 RF_MODEL = None
 
 DEVICES = {
-    1: {"name": "AC", "type": "Air Conditioner", "status": False, "energy": 2500},
-    2: {"name": "Fan", "type": "Cooling Device", "status": True, "energy": 150},
-    3: {"name": "Light", "type": "Lighting", "status": True, "energy": 100},
-    4: {"name": "TV", "type": "Entertainment", "status": False, "energy": 200},
-    5: {"name": "Fridge", "type": "Refrigerator", "status": True, "energy": 500},
+    1: {"name": "AC", "type": "Air Conditioner", "status": False, "energy": 1200},
+    2: {"name": "Fan", "type": "Cooling Device", "status": True, "energy": 30},
+    3: {"name": "Light", "type": "Lighting", "status": True, "energy": 20},
+    4: {"name": "TV", "type": "Entertainment", "status": False, "energy": 250},
+    5: {"name": "Fridge", "type": "Refrigerator", "status": True, "energy": 400},
 }
 
 DEVICE_STATS = {
@@ -82,6 +101,11 @@ WEATHER_CACHE: Dict = {
     "fetched_at": None,
     "latitude": None,
     "longitude": None,
+    "sunrise_unix": None,   # UTC unix timestamp from OpenWeather sys.sunrise
+    "sunset_unix": None,    # UTC unix timestamp from OpenWeather sys.sunset
+    "timezone_offset": 0,   # seconds offset from UTC (OpenWeather 'timezone' field)
+    "sunrise_hour": None,   # Local hour (0-23) when sunrise occurs
+    "sunset_hour": None,    # Local hour (0-23) when sunset occurs
 }
 
 # Active user location (updated on login/signup; default = Mardan)
@@ -207,7 +231,8 @@ def hash_password(pwd: str) -> str:
 
 
 def fetch_weather_sync(lat: float, lon: float):
-    """Call RapidAPI OpenWeather, return (temp_c, description, city)."""
+    """Call RapidAPI OpenWeather, return (temp_c, description, city).
+    Also caches sunrise, sunset, and timezone offset from the API response."""
     url = f"https://{RAPIDAPI_HOST}/latlon" f"?latitude={lat}&longitude={lon}&lang=EN"
     req = urllib.request.Request(
         url,
@@ -226,7 +251,18 @@ def fetch_weather_sync(lat: float, lon: float):
         temp_c = round(temp_raw - 273.15, 2)
         desc = data.get("weather", [{}])[0].get("description", "")
         city = data.get("name", "Unknown")
-        logger.info(f"[WEATHER] {city}: {temp_c}°C ({desc})")
+        # Parse sunrise / sunset (UTC unix) + timezone offset (seconds)
+        sys_block = data.get("sys", {})
+        sunrise_unix  = sys_block.get("sunrise")   # int UTC epoch
+        sunset_unix   = sys_block.get("sunset")    # int UTC epoch
+        tz_offset     = data.get("timezone", 0)    # seconds east of UTC
+        WEATHER_CACHE["sunrise_unix"]   = sunrise_unix
+        WEATHER_CACHE["sunset_unix"]    = sunset_unix
+        WEATHER_CACHE["timezone_offset"] = tz_offset
+        logger.info(
+            f"[WEATHER] {city}: {temp_c}\u00b0C ({desc}) | "
+            f"tz_offset={tz_offset//3600:+d}h | sunrise/sunset cached"
+        )
         return temp_c, desc, city
     except Exception as e:
         logger.warning(f"[WEATHER] API error: {e}")
@@ -528,7 +564,6 @@ def init_custom_rules_table():
     except Exception as e:
         logger.warning(f"[WARN] Custom rules table: {e}")
 
-
 # ══════════════════════════════════════════════════════════════
 #  AGENT NODES
 # ══════════════════════════════════════════════════════════════
@@ -576,9 +611,9 @@ def node1_rf_predict(now: datetime, temp: float) -> List[Dict]:
 
 
 def node2_rule_engine(
-    predictions: List[Dict], now: datetime, temp: float
+    predictions: List[Dict], now: datetime, temp: float, sunrise_hour: int = None, sunset_hour: int = None
 ) -> List[Dict]:
-    """Node 2 — Apply rules: confidence threshold, smart peak hours, night block, custom temp rules, state check."""
+    """Node 2 — Apply rules: confidence threshold, smart peak hours, daylight block, night block, custom temp rules, state check."""
     # Deep-night hours: 11 PM (23) → 4 AM (3).  No one turns on Light/TV during sleep hours
     # unless the user has DISABLED the deep-night block from Settings.
     NIGHT_HOURS = set(range(23, 24)) | set(range(0, 4))  # 23, 0, 1, 2, 3
@@ -654,6 +689,20 @@ def node2_rule_engine(
             result["rule_reason"] = (
                 f"NIGHT_BLOCK ({TARGET_NAMES[did]} OFF — sleep hours {hour:02d}:xx, "
                 f"auto-on blocked 23:00-03:59)"
+            )
+
+        # Rule 2c: Daylight hours block (Light) - don't turn on Light between sunrise and sunset
+        elif (
+            did == 3  # Light device
+            and pred is True
+            and sunrise_hour is not None
+            and sunset_hour is not None
+            and sunrise_hour <= hour < sunset_hour
+        ):
+            result["approved"] = False
+            result["rule_reason"] = (
+                f"DAYLIGHT_BLOCK (Light OFF — natural daylight available, "
+                f"sunrise={sunrise_hour:02d}:00, sunset={sunset_hour:02d}:00)"
             )
 
         # Rule 3: Away mode — block AC/Fan/Light/TV from auto-turning ON
@@ -743,7 +792,9 @@ async def agent_loop():
             )
 
             # ── Node 2: Rule Engine ────────────────────────────
-            rule_checked = node2_rule_engine(predictions, now, temp)
+            sunrise_hour = WEATHER_CACHE.get("sunrise_hour")
+            sunset_hour = WEATHER_CACHE.get("sunset_hour")
+            rule_checked = node2_rule_engine(predictions, now, temp, sunrise_hour, sunset_hour)
             approved_count = sum(1 for r in rule_checked if r["approved"])
             node_log.append(
                 {
@@ -947,23 +998,54 @@ async def set_override_duration(req: OverrideDuration):
 async def get_analytics():
     analytics = []
     total_energy = 0.0
+
+    conn = get_db()
+    c = conn.cursor()
+    db_stats = {}
+    try:
+        rows = c.execute("""
+            SELECT device_name,
+                   COUNT(*) as total_actions,
+                   AVG(confidence) as avg_confidence,
+                   SUM(CAST(energy_used AS REAL)) as total_wh
+            FROM device_logs
+            GROUP BY device_name
+        """).fetchall()
+        for r in rows:
+            name = r["device_name"]
+            key_name = "Fridge" if name == "Refrigerator" else name
+            db_stats[key_name] = {
+                "total_actions": r["total_actions"],
+                "avg_accuracy": r["avg_confidence"] or 0.90,
+                "energy_total": (r["total_wh"] or 0.0) / 1000.0
+            }
+    except Exception as e:
+        logger.error(f"Error in analytics db query: {e}")
+    finally:
+        conn.close()
+
     for did, d in DEVICES.items():
+        name = d["name"]
+        db_s = db_stats.get(name, {})
         s = DEVICE_STATS.get(did, {})
-        on = s.get("on_count", 0)
-        energy = d["energy"] * (on / 100) if on > 0 else 0
+        on_count = s.get("on_count", 0)
+
+        total_actions = db_s.get("total_actions", on_count + s.get("off_count", 0))
+        avg_accuracy = db_s.get("avg_accuracy", s.get("accuracy", 0.90))
+        energy = db_s.get("energy_total", (d["energy"] * on_count) / 1000.0)
+
         total_energy += energy
         analytics.append(
             {
                 "device_id": did,
-                "device_name": d["name"],
+                "device_name": name,
                 "type": d["type"],
-                "total_actions": on + s.get("off_count", 0),
-                "on_count": on,
-                "off_count": s.get("off_count", 0),
-                "avg_accuracy": s.get("accuracy", 0.90),
+                "total_actions": total_actions,
+                "avg_accuracy": avg_accuracy,
                 "energy_total": energy,
             }
         )
+
     return {
         "timestamp": datetime.now().isoformat(),
         "total_devices": len(analytics),
@@ -1134,8 +1216,7 @@ async def get_history(device_id: Optional[int] = None, days: int = 14):
             ).fetchall()
         else:
             rows = c.execute(
-                "SELECT * FROM two_week_logs ORDER BY timestamp DESC LIMIT ?",
-                (days * 48 * 5,),
+                "SELECT * FROM two_week_logs ORDER BY timestamp DESC"
             ).fetchall()
         data = [dict(r) for r in rows]
         conn.close()
@@ -1337,8 +1418,24 @@ async def update_location(loc: LocationUpdate):
 
 @app.get("/api/weather/current")
 async def get_current_weather():
-    """Return live temperature for the active user's location."""
+    """Return live temperature + sunrise/sunset for the active user's location."""
     temp = await asyncio.to_thread(get_live_temperature)
+
+    # Build human-readable sunrise/sunset in location-local time (12-hour format with AM/PM)
+    sunrise_str = sunset_str = None
+    sunrise_unix = WEATHER_CACHE.get("sunrise_unix")
+    sunset_unix  = WEATHER_CACHE.get("sunset_unix")
+    tz_offset    = WEATHER_CACHE.get("timezone_offset", 0) or 0
+    if sunrise_unix:
+        import datetime as _dt
+        sunrise_local = _dt.datetime.utcfromtimestamp(sunrise_unix + tz_offset)
+        sunset_local  = _dt.datetime.utcfromtimestamp(sunset_unix  + tz_offset)
+        sunrise_str   = sunrise_local.strftime("%I:%M %p")  # 12-hour format with AM/PM
+        sunset_str    = sunset_local.strftime("%I:%M %p")   # 12-hour format with AM/PM
+        # Cache sunrise/sunset hours for agent rule engine
+        WEATHER_CACHE["sunrise_hour"] = sunrise_local.hour
+        WEATHER_CACHE["sunset_hour"]  = sunset_local.hour
+
     return {
         "temp_c": temp,
         "description": WEATHER_CACHE.get("description"),
@@ -1351,6 +1448,12 @@ async def get_current_weather():
             else None
         ),
         "source": "RapidAPI OpenWeather",
+        # Sunrise / Sunset — dynamic, from live API, local time of the location
+        "sunrise": sunrise_str,           # e.g. "05:12"
+        "sunset": sunset_str,             # e.g. "19:47"
+        "sunrise_unix": sunrise_unix,
+        "sunset_unix": sunset_unix,
+        "timezone_offset_sec": tz_offset,
     }
 
 
@@ -1547,6 +1650,507 @@ async def delete_rule(rule_id: int):
     except Exception as e:
         logger.error(f"[RULES] Delete error: {e}")
         raise HTTPException(status_code=400, detail=str(e))
+
+
+
+# ── Voice Command (Gemini AI NLP) ─────────────────────────────
+# ── Quota-Safe Design:
+#    1. LOCAL-FIRST: well-known commands resolved without any API call (saves 80%+ tokens)
+#    2. RESPONSE CACHE: identical commands re-use last Gemini response (no duplicate calls)
+#    3. RATE LIMITER: max 20 Gemini calls / 60 s sliding window
+#    4. GRACEFUL FALLBACK: on 429/quota, local VoiceCommandProcessor takes over seamlessly
+
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
+GEMINI_API_URL = (
+    "https://generativelanguage.googleapis.com/v1beta/models/"
+    "gemini-2.0-flash:generateContent?key=" + GEMINI_API_KEY
+)
+
+VOICE_SYSTEM_PROMPT = """You are an intelligent Smart Home AI Assistant.
+
+Your job is to understand natural language voice commands and convert them into structured device control actions.
+
+Supported Devices: AC, Fan, Light, Refrigerator, TV
+
+Rules:
+1. Understand different ways users may speak the same command.
+2. Detect the target device and intended action.
+3. Return ONLY valid JSON — no extra text, no markdown, no explanation.
+4. Action can be ON, OFF, STATUS, or UNKNOWN.
+5. If the command is unclear, return {"device":"UNKNOWN","action":"UNKNOWN"}.
+6. Ignore spelling mistakes and speech recognition errors.
+7. Understand conversational language and context (e.g. "it's hot" → AC ON).
+8. Support English commands only.
+
+Examples:
+User: Turn on the fan → {"device":"Fan","action":"ON"}
+User: It's too hot in here → {"device":"AC","action":"ON"}
+User: Switch off the television → {"device":"TV","action":"OFF"}
+User: Can you make the room brighter? → {"device":"Light","action":"ON"}
+User: Is the refrigerator running? → {"device":"Refrigerator","action":"STATUS"}
+User: Turn everything off → {"device":"ALL","action":"OFF"}
+User: What's currently on? → {"device":"ALL","action":"STATUS"}
+
+Return ONLY valid JSON."""
+
+DEVICE_NAME_MAP = {
+    "ac": 1, "air conditioner": 1,
+    "fan": 2,
+    "light": 3, "lights": 3,
+    "tv": 4, "television": 4,
+    "refrigerator": 5, "fridge": 5,
+}
+
+# ── Quota management state ─────────────────────────────────────
+import re as _re
+import time as _time
+from collections import deque as _deque
+
+# LRU response cache: normalised-text → {"device":…,"action":…}
+_VOICE_CACHE: Dict[str, dict] = {}
+_VOICE_CACHE_MAX = 200          # keep up to 200 entries
+
+# Rate-limiter: sliding window — timestamps of recent Gemini calls
+_GEMINI_CALL_TIMES: "_deque[float]" = _deque()
+_GEMINI_RATE_LIMIT   = 20       # max calls per window
+_GEMINI_RATE_WINDOW  = 60.0     # seconds (1 minute)
+
+# Track whether Gemini is in "quota cooldown" mode (after a 429)
+_GEMINI_QUOTA_COOLDOWN_UNTIL: float = 0.0   # epoch time
+_GEMINI_COOLDOWN_SECONDS    = 60            # back-off for 60 s after a 429
+
+# ── Keyword-based LOCAL matcher ────────────────────────────────
+# Handles the vast majority of clear, everyday commands locally
+# so Gemini is only called for truly ambiguous / contextual speech.
+
+_LOCAL_DEVICE_PATTERNS: List[tuple] = [
+    # (regex, device_key)
+    (_re.compile(r"\b(air\s*condition\w*|ac|aircon)\b", _re.I), "AC"),
+    (_re.compile(r"\b(fan|ceiling\s*fan|blower)\b",           _re.I), "Fan"),
+    (_re.compile(r"\b(light|lights?|lamp|bulb|illuminat\w*)\b", _re.I), "Light"),
+    (_re.compile(r"\b(tv|television|telly|screen)\b",         _re.I), "TV"),
+    (_re.compile(r"\b(fridge|refrigerat\w*|cooler)\b",        _re.I), "Refrigerator"),
+    (_re.compile(r"\b(every(thing|one|body)|all\s*device|all\s*light)\b", _re.I), "ALL"),
+]
+
+_LOCAL_ON_PATTERNS = _re.compile(
+    r"\b(turn\s+on|switch\s+on|power\s+on|start|enable|activate|open|on)\b", _re.I
+)
+_LOCAL_OFF_PATTERNS = _re.compile(
+    r"\b(turn\s+off|switch\s+off|power\s+off|stop|disable|deactivate|shut|off)\b", _re.I
+)
+_LOCAL_STATUS_PATTERNS = _re.compile(
+    r"\b(status|is\s+(on|off|running)|currently|check|tell\s+me|what.*(on|running|active))\b", _re.I
+)
+
+
+def _local_parse(text: str) -> Optional[dict]:
+    """
+    Fast keyword matcher — returns {device, action} for clear commands.
+    Returns None if the command needs contextual AI understanding.
+    """
+    t = text.lower().strip()
+
+    device = None
+    for pattern, dev in _LOCAL_DEVICE_PATTERNS:
+        if pattern.search(t):
+            device = dev
+            break
+
+    if device is None:
+        return None   # can't resolve device locally → send to Gemini
+
+    # Determine action
+    if _LOCAL_OFF_PATTERNS.search(t):
+        action = "OFF"
+    elif _LOCAL_STATUS_PATTERNS.search(t):
+        action = "STATUS"
+    elif _LOCAL_ON_PATTERNS.search(t):
+        action = "ON"
+    else:
+        return None   # ambiguous action → send to Gemini
+
+    return {"device": device, "action": action}
+
+
+def _rate_limit_ok() -> bool:
+    """Return True if we are within the allowed call rate."""
+    now = _time.time()
+    # Evict timestamps older than the window
+    while _GEMINI_CALL_TIMES and now - _GEMINI_CALL_TIMES[0] > _GEMINI_RATE_WINDOW:
+        _GEMINI_CALL_TIMES.popleft()
+    return len(_GEMINI_CALL_TIMES) < _GEMINI_RATE_LIMIT
+
+
+def _record_gemini_call():
+    _GEMINI_CALL_TIMES.append(_time.time())
+
+
+def _local_fallback(text: str) -> dict:
+    """Use local VoiceCommandProcessor as last-resort fallback."""
+    if VOICE_PROCESSOR:
+        r = VOICE_PROCESSOR.process_command(text)
+        return {
+            "device": r.get("device", "UNKNOWN"),
+            "action": r.get("action", "UNKNOWN"),
+        }
+    return {"device": "UNKNOWN", "action": "UNKNOWN"}
+
+
+def _call_gemini_api(user_text: str) -> dict:
+    """Raw Gemini API call. Raises urllib.error.HTTPError on failure."""
+    payload = json.dumps({
+        "system_instruction": {"parts": [{"text": VOICE_SYSTEM_PROMPT}]},
+        "contents": [{"parts": [{"text": user_text}]}],
+        "generationConfig": {"temperature": 0.1, "maxOutputTokens": 64},
+    }).encode("utf-8")
+    req = urllib.request.Request(
+        GEMINI_API_URL,
+        data=payload,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=15) as resp:
+        data = json.loads(resp.read().decode())
+    raw = data["candidates"][0]["content"]["parts"][0]["text"].strip()
+    if raw.startswith("```"):
+        raw = "\n".join(raw.split("\n")[1:])
+    if raw.endswith("```"):
+        raw = raw[: raw.rfind("```")]
+    return json.loads(raw.strip())
+
+
+def smart_parse_command(user_text: str) -> tuple:
+    """
+    Quota-safe command parser.
+
+    Priority chain:
+      1. Response cache   → free, instant
+      2. Local matcher    → free, handles clear commands
+      3. Rate limiter     → skips Gemini if already at 20 req/min
+      4. Quota cooldown   → skips Gemini for 60 s after a 429
+      5. Gemini API       → only for truly ambiguous speech
+      6. Local fallback   → always works even if Gemini is down
+
+    Returns (result_dict, source_label).
+    """
+    global _GEMINI_QUOTA_COOLDOWN_UNTIL
+
+    # ── 1. Normalise for cache key ──────────────────────────────
+    cache_key = " ".join(user_text.lower().split())
+
+    if cache_key in _VOICE_CACHE:
+        logger.info(f"[VOICE] Cache hit: '{cache_key}'")
+        return _VOICE_CACHE[cache_key], "cache"
+
+    # ── 2. Local keyword matcher ────────────────────────────────
+    local_result = _local_parse(user_text)
+    if local_result:
+        logger.info(
+            f"[VOICE] Local match: device={local_result['device']}, action={local_result['action']}"
+        )
+        # Store in cache so repeat commands stay free
+        if len(_VOICE_CACHE) >= _VOICE_CACHE_MAX:
+            _VOICE_CACHE.pop(next(iter(_VOICE_CACHE)))
+        _VOICE_CACHE[cache_key] = local_result
+        return local_result, "local"
+
+    # ── 3. Rate-limiter check ───────────────────────────────────
+    if not _rate_limit_ok():
+        logger.warning(
+            f"[VOICE] Rate limit reached ({_GEMINI_RATE_LIMIT} calls/{_GEMINI_RATE_WINDOW}s) "
+            "— using local fallback"
+        )
+        result = _local_fallback(user_text)
+        return result, "local_rate_limited"
+
+    # ── 4. Quota cooldown check ─────────────────────────────────
+    now = _time.time()
+    if now < _GEMINI_QUOTA_COOLDOWN_UNTIL:
+        remaining = int(_GEMINI_QUOTA_COOLDOWN_UNTIL - now)
+        logger.warning(f"[VOICE] Gemini quota cooldown — {remaining}s left — using local fallback")
+        result = _local_fallback(user_text)
+        return result, "local_quota_cooldown"
+
+    # ── 5. Call Gemini ──────────────────────────────────────────
+    try:
+        _record_gemini_call()
+        result = _call_gemini_api(user_text)
+        logger.info(
+            f"[VOICE] Gemini: device={result.get('device')}, action={result.get('action')} "
+            f"| calls this minute: {len(_GEMINI_CALL_TIMES)}/{_GEMINI_RATE_LIMIT}"
+        )
+        # Cache the Gemini response
+        if len(_VOICE_CACHE) >= _VOICE_CACHE_MAX:
+            _VOICE_CACHE.pop(next(iter(_VOICE_CACHE)))
+        _VOICE_CACHE[cache_key] = result
+        return result, "gemini"
+
+    except urllib.error.HTTPError as e:
+        if e.code == 429:
+            # Quota exhausted — enter cooldown and use local processor
+            _GEMINI_QUOTA_COOLDOWN_UNTIL = _time.time() + _GEMINI_COOLDOWN_SECONDS
+            logger.warning(
+                f"[VOICE] Gemini 429 quota exceeded — local fallback active for "
+                f"{_GEMINI_COOLDOWN_SECONDS}s"
+            )
+        else:
+            logger.warning(f"[VOICE] Gemini HTTP {e.code}: {e.reason}")
+        result = _local_fallback(user_text)
+        return result, "local_fallback"
+
+    except Exception as e:
+        logger.warning(f"[VOICE] Gemini error: {e} — using local fallback")
+        result = _local_fallback(user_text)
+        return result, "local_fallback"
+
+
+class VoiceCommandRequest(BaseModel):
+    text: str
+
+
+def execute_voice_action(device: str, action: str) -> dict:
+    """Apply a parsed voice command to the DEVICES state."""
+    action = action.upper()
+    device_lower = device.lower()
+
+    # Handle ALL devices
+    if device_lower == "all":
+        if action == "OFF":
+            changed = []
+            for did, d in DEVICES.items():
+                if d["status"]:
+                    d["status"] = False
+                    MANUAL_OVERRIDES[did] = datetime.now()
+                    DEVICE_OVERRIDE_MINUTES[did] = 30
+                    push_notification(d["name"], False, "VOICE — turn everything off", 1.0, "Voice Command")
+                    changed.append(d["name"])
+            return {"applied": True, "changed": changed, "action": "OFF", "device": "ALL"}
+        elif action in ("ON", "STATUS"):
+            statuses = {d["name"]: d["status"] for d in DEVICES.values()}
+            return {"applied": action == "STATUS", "statuses": statuses, "action": action, "device": "ALL"}
+        return {"applied": False, "device": "ALL", "action": action}
+
+    if action == "STATUS":
+        did = DEVICE_NAME_MAP.get(device_lower)
+        if did:
+            name = DEVICES[did]["name"]
+            return {"applied": True, "device": name, "action": "STATUS", "status": DEVICES[did]["status"]}
+        return {"applied": False, "device": device, "action": "STATUS", "error": "Device not found"}
+
+    if action in ("ON", "OFF"):
+        did = DEVICE_NAME_MAP.get(device_lower)
+        if not did:
+            return {"applied": False, "device": device, "action": action, "error": "Device not found"}
+        new_state = action == "ON"
+        DEVICES[did]["status"] = new_state
+        MANUAL_OVERRIDES[did] = datetime.now()
+        DEVICE_OVERRIDE_MINUTES[did] = 30
+        push_notification(
+            DEVICES[did]["name"], new_state,
+            f"VOICE COMMAND — {action}", 1.0, "Voice Command"
+        )
+        logger.info(f"[VOICE] {DEVICES[did]['name']} → {action}")
+        return {"applied": True, "device": DEVICES[did]["name"], "action": action}
+
+    return {"applied": False, "device": device, "action": action, "error": "Unknown action"}
+
+
+@app.post("/api/voice/command")
+async def voice_command(req: VoiceCommandRequest):
+    """
+    Accept a natural language text command, parse it with the quota-safe engine,
+    and apply the resulting device action.
+
+    Quota-safe flow:
+      cache → local matcher → rate-limiter → cooldown guard → Gemini API → local fallback
+    """
+    if not req.text or not req.text.strip():
+        raise HTTPException(status_code=400, detail="Empty command text")
+
+    text = req.text.strip()
+    logger.info(f"[VOICE] Received command: '{text}'")
+
+    # Parse via quota-safe engine
+    parsed, source = await asyncio.to_thread(smart_parse_command, text)
+    device = parsed.get("device", "UNKNOWN")
+    action = parsed.get("action", "UNKNOWN")
+
+    logger.info(f"[VOICE] Parsed via [{source}]: device={device}, action={action}")
+
+    if device == "UNKNOWN" or action == "UNKNOWN":
+        return {
+            "success": False,
+            "original_text": text,
+            "device": device,
+            "action": action,
+            "message": "Sorry, I didn't understand that command. Please try again.",
+            "applied": False,
+            "source": source,
+        }
+
+    result = execute_voice_action(device, action)
+
+    return {
+        "success": True,
+        "original_text": text,
+        "device": device,
+        "action": action,
+        "message": f"{'✅' if result.get('applied') else '⚠️'} {device} → {action}",
+        "applied": result.get("applied", False),
+        "details": result,
+        "source": source,   # tells frontend which engine handled this command
+    }
+
+
+# ── Electricity Bill Estimator ────────────────────────────────
+
+def calc_bill_rs(units: float) -> float:
+    """Progressive Pakistani electricity tariff calculation."""
+    if units <= 0:
+        return 0.0
+    if units <= 100:
+        return units * 20
+    if units <= 200:
+        return 100 * 20 + (units - 100) * 30
+    return 100 * 20 + 100 * 30 + (units - 200) * 35
+
+
+def build_bill_breakdown(units: float) -> list:
+    """Return slab-by-slab breakdown list."""
+    breakdown = []
+    remaining = units
+    if remaining <= 0:
+        return breakdown
+    # Slab 1: first 100 units @ Rs.20
+    slab1 = min(remaining, 100.0)
+    breakdown.append({
+        "slab": "First 100 Units",
+        "units": round(slab1, 2),
+        "rate": 20,
+        "amount": round(slab1 * 20, 2),
+    })
+    remaining -= slab1
+    if remaining <= 0:
+        return breakdown
+    # Slab 2: next 100 units @ Rs.30
+    slab2 = min(remaining, 100.0)
+    breakdown.append({
+        "slab": f"Next {round(slab2, 2)} Units (101–200)",
+        "units": round(slab2, 2),
+        "rate": 30,
+        "amount": round(slab2 * 30, 2),
+    })
+    remaining -= slab2
+    if remaining <= 0:
+        return breakdown
+    # Slab 3: above 200 units @ Rs.35
+    breakdown.append({
+        "slab": f"Above 200 Units ({round(remaining, 2)} units)",
+        "units": round(remaining, 2),
+        "rate": 35,
+        "amount": round(remaining * 35, 2),
+    })
+    return breakdown
+
+
+@app.get("/api/electricity/bill")
+async def get_electricity_bill(target_units: float = 200.0):
+    """
+    Calculate the current-month electricity bill from device energy records.
+    Reads device_logs.energy_used (Wh) for the current calendar month.
+    Falls back to two_week_logs.energy_wh if device_logs has no data.
+    Applies progressive tariff: Rs.20/unit (≤100), Rs.30/unit (101-200), Rs.35/unit (>200).
+    """
+    try:
+        now = datetime.now()
+        # Billing period: 1st of current month to today
+        month_start = datetime(now.year, now.month, 1)
+        month_start_str = month_start.strftime("%Y-%m-%d")
+        today_str = now.strftime("%Y-%m-%d")
+
+        # Days in current month
+        import calendar
+        days_in_month = calendar.monthrange(now.year, now.month)[1]
+        days_passed = now.day  # today counts
+
+        conn = get_db()
+        c = conn.cursor()
+
+        # ── Try device_logs first ─────────────────────────────
+        device_rows = c.execute("""
+            SELECT device_name,
+                   SUM(CAST(energy_used AS REAL)) as total_wh,
+                   COUNT(*) as cnt
+            FROM device_logs
+            WHERE timestamp >= ?
+            GROUP BY device_name
+        """, (month_start_str,)).fetchall()
+
+        total_wh_from_device_logs = sum(r["total_wh"] or 0 for r in device_rows)
+
+        # ── Fall back to two_week_logs if needed ──────────────
+        use_fallback = (total_wh_from_device_logs == 0)
+        if use_fallback:
+            device_rows = c.execute("""
+                SELECT device_name,
+                       SUM(CAST(energy_wh AS REAL)) as total_wh,
+                       COUNT(*) as cnt
+                FROM two_week_logs
+                WHERE timestamp >= ?
+                GROUP BY device_name
+            """, (month_start_str,)).fetchall()
+
+        conn.close()
+
+        # ── Aggregate per-device kWh ──────────────────────────
+        device_breakdown = []
+        total_wh = 0.0
+        for row in device_rows:
+            wh = row["total_wh"] or 0.0
+            total_wh += wh
+            kwh = round(wh / 1000.0, 3)
+            device_breakdown.append({
+                "device": row["device_name"],
+                "kwh": kwh,
+                "rs": round(calc_bill_rs(kwh), 2),
+            })
+        device_breakdown.sort(key=lambda x: x["kwh"], reverse=True)
+
+        total_kwh = round(total_wh / 1000.0, 3)
+        current_bill = round(calc_bill_rs(total_kwh), 2)
+        breakdown = build_bill_breakdown(total_kwh)
+
+        # ── Projection ────────────────────────────────────────
+        avg_daily_kwh = round(total_kwh / max(days_passed, 1), 3)
+        projected_monthly_kwh = round(avg_daily_kwh * days_in_month, 3)
+        projected_monthly_bill = round(calc_bill_rs(projected_monthly_kwh), 2)
+
+        # ── Progress vs target ────────────────────────────────
+        pct_of_target = round((total_kwh / max(target_units, 1)) * 100, 1)
+
+        return {
+            "billing_period": {
+                "start": month_start_str,
+                "end": today_str,
+                "days_passed": days_passed,
+                "days_in_month": days_in_month,
+                "days_remaining": days_in_month - days_passed,
+            },
+            "total_units_kwh": total_kwh,
+            "current_bill_rs": current_bill,
+            "bill_breakdown": breakdown,
+            "avg_daily_kwh": avg_daily_kwh,
+            "projected_monthly_kwh": projected_monthly_kwh,
+            "projected_monthly_bill_rs": projected_monthly_bill,
+            "target_units": target_units,
+            "pct_of_target": pct_of_target,
+            "device_breakdown": device_breakdown,
+            "data_source": "two_week_logs (fallback)" if use_fallback else "device_logs",
+        }
+    except Exception as e:
+        logger.error(f"[BILL] Error calculating bill: {e}")
+        raise HTTPException(500, str(e))
 
 
 # ── Startup ────────────────────────────────────────────────────

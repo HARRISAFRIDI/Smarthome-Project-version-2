@@ -7,6 +7,9 @@ This is a **Final Year Project** for an AI-powered home automation system with:
 - **Agentic AI** — LangGraph-style 5-node pipeline architecture
 - **Hybrid Decision Making** — Rules + ML predictions + User overrides
 - **Real-time Dashboard** — React with live device control
+- **Voice Control** — Google Gemini AI NLP for natural language commands
+- **Daylight & Night Blocking** — Smart light control based on sunrise/sunset
+- **Home / Away Mode** — Presence-aware automation
 - **Continuous Learning** — Automatic weekly model retraining
 - **SQLite Database** — Zero-config, file-based, no server installation needed
 
@@ -21,7 +24,8 @@ This is a **Final Year Project** for an AI-powered home automation system with:
 5. [Frontend Setup](#frontend-setup)
 6. [Running the System](#running-the-system)
 7. [Temperature Rules Configuration](#temperature-rules-configuration)
-8. [Troubleshooting](#troubleshooting)
+8. [Voice Control Setup](#voice-control-setup)
+9. [Troubleshooting](#troubleshooting)
 
 ---
 
@@ -52,7 +56,7 @@ The ML model must be trained before starting the backend:
 
 ```bash
 # Open and run the Jupyter notebook
-jupyter notebook 2024_dataset_training_model.ipynb
+jupyter notebook train_model_5months.ipynb
 ```
 
 This generates `home_automation_model.pkl` in the project root.  
@@ -78,16 +82,20 @@ The database file `home_automation.db` is **auto-created** the first time the ba
 
 | Table | Purpose |
 |-------|---------|
-| `two_week_logs` | 14-day device state history |
+| `two_week_logs` | Rolling device state history (Jun 1–20, 2026 — 8,763 rows) |
+| `device_logs` | Per-event log with temperature, hour, weekday, energy |
 | `agent_logs` | AI agent autonomous decisions |
 | `notifications` | 24h event log (manual + AI actions) |
 | `custom_rules` | Temperature-based automation rules |
+| `peak_hours` | Hourly energy aggregates (peak hours: 15:00–18:00) |
+| `devices` | Device registry (5 devices) |
+| `users` | User accounts |
 
 ### Inspect the Database
 
 ```bash
-# From project root
-python check_db.py
+# From project root — use Python's built-in sqlite3
+python -c "import sqlite3; conn=sqlite3.connect('home_automation.db'); [print(t[0], conn.execute('SELECT COUNT(*) FROM '+t[0]).fetchone()[0]) for t in conn.execute(\"SELECT name FROM sqlite_master WHERE type='table'\").fetchall()]; conn.close()"
 ```
 
 ---
@@ -100,13 +108,13 @@ python check_db.py
 cd backend
 
 # Create venv
-python -m venv venv
+python -m venv .venv
 
 # Activate — Windows
-venv\Scripts\activate
+.venv\Scripts\activate
 
 # Activate — Linux/Mac
-source venv/bin/activate
+source .venv/bin/activate
 ```
 
 ### 2. Install Dependencies
@@ -131,6 +139,12 @@ LOG_LEVEL=INFO
 # ML model
 MODEL_PATH=../home_automation_model.pkl
 RETRAIN_INTERVAL_DAYS=7
+
+# Google Gemini AI (for voice commands)
+GEMINI_API_KEY=your_key_here
+
+# RapidAPI OpenWeather (for temperature + sunrise/sunset)
+RAPIDAPI_KEY=your_key_here
 ```
 
 ### 4. Start Backend
@@ -143,7 +157,7 @@ python main.py
 ```
 ✅ Database initialized (SQLite)
 ✅ ML Model loaded
-🔄 Starting agent loop (every 60s)
+🔄 Starting agent loop (every 3 min)
 📚 API docs: http://localhost:8000/docs
 ```
 
@@ -168,7 +182,6 @@ Edit `frontend/.env`:
 
 ```env
 REACT_APP_API_URL=http://localhost:8000/api
-REACT_APP_WS_URL=ws://localhost:8000/ws
 ```
 
 ### 3. Start Development Server
@@ -198,7 +211,7 @@ scripts\run.bat
 **Terminal 1 — Backend:**
 ```bash
 cd backend
-venv\Scripts\activate
+.venv\Scripts\activate
 python main.py
 ```
 
@@ -213,9 +226,6 @@ npm start
 ```bash
 # Test backend health
 curl http://localhost:8000/health
-
-# Test database
-python check_db.py
 
 # Check API docs
 # Open in browser: http://localhost:8000/docs
@@ -234,7 +244,7 @@ These rules override AI predictions based on the current temperature.
 |-------------|-----|-----|--------|
 | 0–25°C | OFF | OFF | Comfortable — no cooling |
 | 25–30°C | OFF | OFF | Slightly warm |
-| 30–40°C | **OFF** | **ON** | Fan-only (saves ~2350W vs AC) |
+| 30–40°C | **OFF** | **ON** | Fan-only (saves ~1170W vs AC) |
 | 40–50°C | ON | ON | Full cooling |
 | 50°C+ | ON | ON | Extreme heat |
 
@@ -261,20 +271,57 @@ curl -X DELETE http://localhost:8000/api/rules/1
 ### How Rules Are Applied
 
 ```
-Agent Cycle:
-1. Fetch current temperature
+Agent Cycle (every 3 minutes):
+1. Fetch current temperature + sunrise/sunset from weather cache
 2. ML model predicts device states
 3. Rule engine checks custom_rules table:
-   → If matching rule found: override ML prediction
-   → Log reason as "CUSTOM_RULE"
-4. Apply manual override check
+   → If matching rule found: override ML prediction (logged as CUSTOM_RULE)
+   → Daylight block: prevent Light turning on during daylight hours
+   → Deep-night block: prevent Light/TV during 23:00-05:00 (if enabled)
+4. Apply manual override check (skip locked devices)
 5. Execute final decisions
 ```
 
 Backend logs will show:
 ```
 [CUSTOM_RULE] AC (temp=35.0°C): AI predicted True but rule says False
+[DAYLIGHT_BLOCK] Light blocked — natural daylight available (sunrise=05:12, sunset=19:47)
+[NIGHT_BLOCK] Light blocked — deep-night mode active
 ```
+
+---
+
+## Voice Control Setup
+
+Voice control uses Google Gemini AI to parse natural language commands.
+
+### Configuration
+
+Add your Gemini API key to `backend/.env`:
+```env
+GEMINI_API_KEY=your_key_here
+```
+
+### Test Voice Commands
+
+```bash
+# Turn on fan
+curl -X POST http://localhost:8000/api/voice/command \
+  -H "Content-Type: application/json" \
+  -d '{"text": "Turn on the fan"}'
+
+# Turn off light
+curl -X POST http://localhost:8000/api/voice/command \
+  -H "Content-Type: application/json" \
+  -d '{"text": "Switch off the light"}'
+
+# Turn everything off
+curl -X POST http://localhost:8000/api/voice/command \
+  -H "Content-Type: application/json" \
+  -d '{"text": "Turn everything off"}'
+```
+
+Full voice feature documentation: **[VOICE_INPUT.md](VOICE_INPUT.md)**
 
 ---
 
@@ -301,8 +348,8 @@ lsof -ti:8000 | xargs kill -9
 **Database error**
 ```bash
 # SQLite is Python built-in — no server to check
-# Verify the DB file:
-python check_db.py
+# Verify the DB file exists:
+python -c "import os; print('DB size:', os.path.getsize('home_automation.db'), 'bytes')"
 
 # Confirm sqlite3 works:
 python -c "import sqlite3; print('sqlite3 version:', sqlite3.sqlite_version)"
@@ -313,8 +360,15 @@ python -c "import sqlite3; print('sqlite3 version:', sqlite3.sqlite_version)"
 # Check rules exist in DB
 curl http://localhost:8000/api/rules
 
-# Wait 1+ minute for next agent cycle, then check:
+# Wait 3+ minutes for next agent cycle, then check:
 curl http://localhost:8000/api/agent/status
+```
+
+**Gemini API error (voice)**
+```bash
+# Verify API key is set
+python -c "import os; print(os.getenv('GEMINI_API_KEY', 'NOT SET'))"
+# Or check backend/.env
 ```
 
 ---
@@ -351,7 +405,7 @@ npm install
 **Notifications page empty**
 - The `notifications` table auto-creates on first backend run
 - Events are stored for the last 24h only
-- Wait for the agent to run at least once (up to 60 seconds)
+- Wait for the agent to run at least once (up to 3 minutes)
 
 **Override lock not expiring**
 - Default lock duration: 30 minutes
@@ -360,43 +414,28 @@ npm install
 
 **Charts not loading**
 - Analytics require at least some history in `two_week_logs`
-- Let the system run for a few agent cycles (60s each)
+- Let the system run for a few agent cycles (3 min each)
 
----
-
-## API Reference
-
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/api/devices/status` | GET | All device states |
-| `/api/devices/{id}` | GET | Single device + lock info |
-| `/api/device/control` | POST | Turn ON/OFF + set lock duration |
-| `/api/device/override-duration` | POST | Change AI lock (5–60 min) |
-| `/api/current-prediction` | GET | Live ML prediction |
-| `/api/analytics` | GET | System-wide stats |
-| `/api/history` | GET | 14-day history |
-| `/api/history/daily` | GET | Daily aggregation |
-| `/api/notifications/24h` | GET | Last 24h notifications |
-| `/api/notifications/read-all` | POST | Mark all read |
-| `/api/notifications/unread-count` | GET | Badge count |
-| `/api/rules` | GET | View temperature rules |
-| `/api/rules` | POST | Create rule |
-| `/api/rules/{id}` | PUT | Update rule |
-| `/api/rules/{id}` | DELETE | Delete rule |
-| `/api/agent/status` | GET | Agent trace + locks |
-| `/api/system/status` | GET | Health check |
-
-Full interactive docs: http://localhost:8000/docs
+**Daylight block not working**
+- Check weather API is configured and returning sunrise/sunset
+- Test: `curl http://localhost:8000/api/weather/current`
+- Look for `sunrise` and `sunset` fields in the response
 
 ---
 
 ## Documentation
 
-- **[README.md](README.md)** — Project overview & features
-- **[SETUP_GUIDE.md](SETUP_GUIDE.md)** — This file — installation & troubleshooting
-- **[ARCHITECTURE.md](ARCHITECTURE.md)** — System architecture diagrams & data flows
+| File | Purpose |
+|------|---------|
+| [README.md](README.md) | Project overview & features |
+| [SETUP_GUIDE.md](SETUP_GUIDE.md) | This file — installation & troubleshooting |
+| [ARCHITECTURE.md](ARCHITECTURE.md) | System architecture diagrams & data flows |
+| [VOICE_INPUT.md](VOICE_INPUT.md) | Voice control: API, examples, config |
+
+Full interactive API docs: http://localhost:8000/docs
 
 ---
 
 **Final Year Project** — Educational Purpose  
-**Version**: 4.0.0 | **Database**: SQLite | **Status**: ✅ Complete
+**Version**: 4.0.0 | **Database**: SQLite | **Status**: ✅ Complete  
+**Last Updated**: 2026-06-21

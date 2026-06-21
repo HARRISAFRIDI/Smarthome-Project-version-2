@@ -12,13 +12,14 @@
 │  ├────────────────────────────────────────────────────────┤     │
 │  │                                                        │     │
 │  │  Device Cards │ Controls │ Analytics │ Predictions   │     │
-│  │  Real-time Updates via WebSocket                      │     │
+│  │  🎙️ Voice Input │ Real-time Updates (5s polling)    │     │
 │  │  Dark Mode │ Responsive Design │ Charts              │     │
+│  │  🌙 Deep-Night Block │ 🏠 Home/Away Toggle           │     │
 │  │                                                        │     │
 │  └────────────────────────────────────────────────────────┘     │
 └─────────────────────────────────────────────────────────────────┘
                           │
-            REST API + WebSocket Connection
+            REST API (polling every 5s)
                           │
                           ▼
 ┌─────────────────────────────────────────────────────────────────┐
@@ -29,66 +30,25 @@
 │  │          FASTAPI SERVER (Port 8000)                   │     │
 │  ├────────────────────────────────────────────────────────┤     │
 │  │                                                        │     │
-│  │  Endpoints:                                           │     │
 │  │  /devices/status      /device/control                 │     │
-│  │  /predictions         /analytics                      │     │
-│  │  /model/retrain       /system/status                  │     │
-│  │  /ws (WebSocket)                                      │     │
+│  │  /voice/command 🎙️   /current-prediction             │     │
+│  │  /analytics           /history                        │     │
+│  │  /notifications/24h   /agent/status                   │     │
+│  │  /settings/night-mode /home/status                    │     │
+│  │  /weather/current     /system/status                  │     │
 │  │                                                        │     │
 │  └──┬───────────────────────────────┬────────────────┬───┘     │
 │     │                               │                │         │
 │     ▼                               ▼                ▼         │
-│  ┌──────────────┐            ┌─────────────┐    ┌─────────┐   │
-│  │   SERVICE    │            │   SERVICE   │    │SERVICE  │   │
-│  └──────────────┘            └─────────────┘    └─────────┘   │
+│  ┌──────────────┐            ┌─────────────┐    ┌──────────┐  │
+│  │  AI AGENT    │            │  ML MODEL   │    │ VOICE    │  │
+│  │  (5-node)    │            │  (RF+joblib)│    │ PROCESSOR│  │
+│  └──────────────┘            └─────────────┘    └──────────┘  │
+│                                                                   │
 └─────────────────────────────────────────────────────────────────┘
           │                     │                    │
           │                     │                    │
           ▼                     ▼                    ▼
-┌─────────────────────────────────────────────────────────────────┐
-│                   BUSINESS LOGIC LAYER                           │
-├──────────────────────────────────────────────────────────────────┤
-│                                                                   │
-│  ┌───────────────────────────────────────────────────────┐      │
-│  │         AI AGENT (5-Node Pipeline)                   │      │
-│  ├───────────────────────────────────────────────────────┤      │
-│  │                                                       │      │
-│  │  1. HistoryNode ──┐                                 │      │
-│  │                   │                                 │      │
-│  │  2. PredictNode ──┤ (⭐ Learns overrides)          │      │
-│  │                   ├─→ Decision Engine ──┐           │      │
-│  │  3. RuleEngine ───┤   (Priority-based)  ├─→ Output │      │
-│  │                   │                     │           │      │
-│  │  4. DecisionEngine│                     │           │      │
-│  │  5. ControlNode   │                     │           │      │
-│  │  6. LoggingNode   │                     │           │      │
-│  │                                                       │      │
-│  │               │      │
-│  │                                                       │      │
-│  └───────────────────────────────────────────────────────┘      │
-│                                                                   │
-│  ┌───────────────────────────────────────────────────────┐      │
-│  │        MACHINE LEARNING MODEL                        │      │
-│  ├───────────────────────────────────────────────────────┤      │
-│  │                                                       │      │
-│  │  Multi-Output RandomForest Classifier               │      │
-│  │  Predicts: AC, Fan, Light, TV, Fridge               │      │
-│  │  Features: Time, Temp, Humidity, Day patterns       │      │
-│  │                                                       │      │
-│  └───────────────────────────────────────────────────────┘      │
-│                                                                   │
-│  ┌───────────────────────────────────────────────────────┐      │
-│  │     CONTINUOUS LEARNING SYSTEM                       │      │
-│  ├───────────────────────────────────────────────────────┤      │
-│  │                                                       │      │
-│  │  Weekly Retraining Cycle:                           │      │
-│  │  Collect → Analyze → Train → Evaluate → Improve     │      │
-│  │                                                       │      │
-│  └───────────────────────────────────────────────────────┘      │
-│                                                                   │
-└─────────────────────────────────────────────────────────────────┘
-                          │
-                          ▼
 ┌─────────────────────────────────────────────────────────────────┐
 │                   DATA LAYER                                     │
 ├──────────────────────────────────────────────────────────────────┤
@@ -96,20 +56,10 @@
 │  ┌────────────────────────────────────────────────────────┐     │
 │  │          SQLite Database (home_automation.db)        │     │
 │  ├────────────────────────────────────────────────────────┤     │
-│  │                                                        │     │
-│  │  Tables:                                             │     │
 │  │  • two_week_logs     (14-day device state history)   │     │
 │  │  • agent_logs        (AI agent autonomous decisions) │     │
 │  │  • notifications     (24h event log — persistent)   │     │
 │  │  • custom_rules      (temperature-based rules)       │     │
-│  │                                                        │     │
-│  │  Key columns in notifications:                       │     │
-│  │    id, timestamp, device, action, reason,            │     │
-│  │    confidence, node, read                            │     │
-│  │                                                        │     │
-│  │  File: home_automation.db (root directory)           │     │
-│  │  Driver: sqlite3 (Python built-in, no server needed) │     │
-│  │                                                        │     │
 │  └────────────────────────────────────────────────────────┘     │
 │                                                                   │
 └─────────────────────────────────────────────────────────────────┘
@@ -136,13 +86,13 @@ DEVICE STATE
     ▼
 ┌──────────────────────────────────────┐
 │   2. ML Model Prediction              │
-│   (⭐ Already learns user overrides)  │
+│   (RandomForest, 80%+ confidence)    │
 └──────────────────────────────────────┘
     │
     ▼
 ┌──────────────────────────────────────┐
 │   3. Apply Business Rules             │
-│   (temperature, time, humidity, etc)  │
+│   (priority-ordered rule engine)     │
 └──────────────────────────────────────┘
     │
     ▼
@@ -160,57 +110,54 @@ DEVICE STATE
     ▼
 ┌──────────────────────────────────────┐
 │   6. Log Decision to Database         │
-│   (for learning)                      │
+│   (for future learning)              │
 └──────────────────────────────────────┘
     │
     ▼
 ┌──────────────────────────────────────┐
-│   Broadcast to Frontend via WebSocket │
-│   (real-time update)                  │
+│   Notify Frontend (push notification) │
+│   (real-time update via polling)     │
 └──────────────────────────────────────┘
 ```
+
+---
+
+## Agent Rule Engine — Node 2 Priority Order
+
+Each agent cycle (every 3 minutes) applies rules in this exact order:
+
+| # | Rule | Device(s) | Condition | Action |
+|---|------|-----------|-----------|--------|
+| 1 | `STATE_UNCHANGED` | All | Already in predicted state | Skip |
+| 2 | `LOW_CONFIDENCE` | All | Confidence < 80% | Block |
+| 3 | `CUSTOM_RULE` | AC / Fan | Temp-range match in DB | Override |
+| 4 | `SMART_PEAK_BLOCK` | AC | Peak hours defined in config | Block AC |
+| 5 | `NIGHT_BLOCK` | Light, TV | 23:00–05:00 & deep-night mode ON | Block |
+| 6 | `DAYLIGHT_BLOCK` | Light | Current time between sunrise–sunset | Block |
+| 7 | `AWAY_MODE` | AC, Fan, Light, TV | User set status to Away | Block all 4 |
+
+### DAYLIGHT_BLOCK Details
+
+- **Source**: `backend/agents/nodes.py` → `node2_rule_engine()` (Rule 2c)
+- **Default Location**: Mardan, Pakistan (lat 34.1925, lon 72.0285)
+- **Weather source**: RapidAPI OpenWeather, cached every 10 minutes
+- **Format**: Sunrise/sunset returned as 12-hour AM/PM (e.g. `"05:12 AM"`, `"07:47 PM"`)
+- **Example reason string**: `"DAYLIGHT_BLOCK (Light OFF — natural daylight available, sunrise=05:00, sunset=19:00)"`
 
 ---
 
 ## Decision Priority System
 
 ```
-INPUT: Device context (current time, temperature, humidity, etc)
-   │
-   ├─────────────────────────────────────────────┐
-   │                                              │
-   ▼                                              │
-Apply Rule Engine (Priority 80 - HIGHEST)        │
-   │                                              │
-   ├─ Rule Match → USE IT ─────────────────────┤ │
-   │                                             │ │
-   └─ No Match ──────────┐                       │ │
-                         │                       │ │
-                         ▼                       │ │
-                ML Prediction (Priority 60)      │ │
-                         │                       │ │
-                         ├─ Use It                │ │
-                         │                       │ │
-                         └─┬─────────────────┐   │ │
-                           │                 │   │ │
-                           ▼                 │   │ │
-                History Pattern (Priority 40)│   │ │
-                           │                 │   │ │
-                           ├─ Use It         │   │ │
-                           │                 │   │ │
-                           └─┬──────┬────────┘   │ │
-                             │      │            │ │
-                             ▼      │            │ │
-                    DEFAULT: OFF (0) │            │ │
-                             │      │            │ │
-                             └──────┴────────────┘ │
-                                    │              │
-                                    ▼              │
-                           FINAL DECISION OUTPUT   │
-                                    │<─────────────┘
-                                    
-NOTE: User overrides are learned by ML model during
-      nightly retraining. No explicit override node needed.
+Manual Override / Voice Command (Priority 100 — ABSOLUTE HIGHEST)
+    │
+    ├─ Yes → Execute immediately, create 30-min override lock
+    └─ No lock active → AI agent decides:
+         │
+         ├─ Custom Rules (Priority 80)
+         ├─ ML Prediction (Priority 60)
+         ├─ History Pattern (Priority 40)
+         └─ DEFAULT: OFF (Priority 0)
 ```
 
 ---
@@ -219,33 +166,38 @@ NOTE: User overrides are learned by ML model during
 
 ```
 Device: AC
-├─ IF temp > 30°C → Decision: ON
-├─ IF temp < 25°C → Decision: OFF
-├─ IF working_hours (9-6, weekday) → Decision: ON
-├─ IF ML_predicts_ON (confidence > 0.6) → Decision: ON
-├─ User_override? → Decision: USER_CHOICE
-└─ DEFAULT → Decision: OFF
+├─ IF temp > 30°C       → Rule: ON (custom rule)
+├─ IF temp < 25°C       → Rule: OFF (custom rule)
+├─ IF SMART_PEAK_BLOCK  → BLOCKED
+├─ IF ML_predicts_ON (confidence > 80%) → ON
+├─ User_override?       → USER_CHOICE
+└─ DEFAULT              → OFF
 
 Device: Fan
-├─ IF temp > 30°C → Decision: ON
-├─ IF humidity > 70% → Decision: ON
-├─ User_override? → Decision: USER_CHOICE
-└─ DEFAULT → Decision: OFF
+├─ IF temp > 30°C       → Rule: ON (custom rule)
+├─ IF humidity > 70%    → Rule: ON
+├─ User_override?       → USER_CHOICE
+└─ DEFAULT              → OFF
 
 Device: Light
-├─ IF night (18:00-07:00) → Decision: ON
-├─ IF day (07:00-18:00) → Decision: OFF
-├─ User_override? → Decision: USER_CHOICE
-└─ DEFAULT → Decision: OFF
+├─ IF DAYLIGHT_BLOCK (sunrise–sunset) → BLOCKED
+├─ IF NIGHT_BLOCK (23:00–05:00)       → BLOCKED (if enabled)
+├─ IF night (18:00–07:00) → ML predicts ON
+├─ User_override?       → USER_CHOICE
+└─ DEFAULT              → OFF
 
 Device: TV
-├─ IF weekend AND (12:00-23:00) → Decision: ON
-├─ IF late_night (23:00-06:00) → Decision: OFF
-├─ User_override? → Decision: USER_CHOICE
-└─ DEFAULT → Decision: OFF
+├─ IF NIGHT_BLOCK (23:00–05:00) → BLOCKED (if enabled)
+├─ IF weekend AND (12:00–23:00) → ML prediction ON
+├─ User_override?       → USER_CHOICE
+└─ DEFAULT              → OFF
 
 Device: Fridge
-└─ ALWAYS → Decision: ON
+├─ IF AC is ON         → OFF (energy saving)
+├─ IF peak hours (18:00–22:00) → OFF (demand management)
+├─ IF temp < 25°C    → OFF (no cooling load)
+├─ Compressor cycle: ON 20 min, OFF 10 min (realistic cycle)
+└─ DEFAULT            → OFF
 ```
 
 ---
@@ -255,7 +207,15 @@ Device: Fridge
 ```
 backend/main.py (FastAPI)
     │
-    ├─ sqlite3 (Python built-in — no external DB server needed)
+    ├─ agents/
+    │   ├─ nodes.py         (node1..node5 functions)
+    │   ├─ agent_loop.py    (start_autonomous_agent)
+    │   └─ __init__.py      (clean exports)
+    │
+    ├─ services/
+    │   └─ voice_processor.py (Gemini AI NLP)
+    │
+    ├─ sqlite3 (Python built-in)
     │   └─→ home_automation.db
     │         • two_week_logs   (14-day history)
     │         • agent_logs      (AI decisions)
@@ -263,18 +223,14 @@ backend/main.py (FastAPI)
     │         • custom_rules    (temperature-based rules)
     │
     ├─ joblib (load home_automation_model.pkl)
-    │
     ├─ numpy (feature engineering)
-    │
     └─ FastAPI + Uvicorn (ASGI server)
 
 frontend/src/App.jsx (React)
     │
     ├─ Polling REST API every 5s (devices, system status)
-    │
-    ├─ Notifications page polls /api/notifications/24h every 15s
-    │
-    └─ API calls to localhost:8000
+    ├─ Notifications page polls every 3s
+    └─ Voice widget: Web Speech API → /api/voice/command
 ```
 
 ---
@@ -282,8 +238,6 @@ frontend/src/App.jsx (React)
 ## Deployment Architecture
 
 ```
-PRODUCTION DEPLOYMENT
-
 ┌─────────────────────────────────────────────────────────┐
 │                   LOCAL / SERVER                         │
 │         (No database server installation needed)         │
@@ -291,7 +245,7 @@ PRODUCTION DEPLOYMENT
 │                                                          │
 │  ┌──────────────────────────────────────────────────┐   │
 │  │  FastAPI Backend (Port 8000)                    │   │
-│  │  uvicorn main:app --host 0.0.0.0 --port 8000    │   │
+│  │  python main.py                                 │   │
 │  └────────────────────┬─────────────────────────────┘   │
 │                        │                                 │
 │                        ▼                                 │
@@ -300,51 +254,14 @@ PRODUCTION DEPLOYMENT
 │  │  • two_week_logs  (14-day device history)        │   │
 │  │  • agent_logs     (AI agent decisions)           │   │
 │  │  • notifications  (24h event log — persistent)   │   │
+│  │  • custom_rules   (temperature automation)       │   │
 │  └──────────────────────────────────────────────────┘   │
 │                                                          │
 │  ┌──────────────────────────────────────────────────┐   │
-│  │  Frontend: React (Port 3000 / npm run start)    │   │
-│  │  (or npm run build for static production files) │   │
+│  │  Frontend: React (Port 3000 / npm start)        │   │
 │  └──────────────────────────────────────────────────┘   │
 │                                                          │
 └─────────────────────────────────────────────────────────┘
-```
-
----
-
-## Continuous Learning Pipeline
-
-```
-WEEK 1-4: DATA COLLECTION
-├─ Collect all device predictions
-├─ Track actual user actions
-├─ Record manual overrides
-└─ Store ground truth in database
-
-WEEK 5: RETRAINING TRIGGER
-├─ Check: enough new data? > 1000 samples
-├─ Fetch training data from DB
-├─ Prepare features (time, temp, humidity, patterns)
-└─ Split train/test sets
-
-WEEK 6: MODEL TRAINING
-├─ Train RandomForest on new data
-├─ Evaluate on test set
-├─ Compare to previous accuracy
-├─ Log metrics to database
-└─ Save improved model (model.pkl)
-
-WEEK 7: VALIDATION
-├─ Run predictions on live data
-├─ Monitor accuracy in real-time
-├─ Compare AI vs user decisions
-└─ Identify drift or degradation
-
-WEEK 8: FEEDBACK LOOP
-├─ Extract user preferences from overrides
-├─ Adjust rules based on patterns
-├─ Update feature importance weights
-└─ Back to Week 1 - continuous cycle
 ```
 
 ---
@@ -354,84 +271,67 @@ WEEK 8: FEEDBACK LOOP
 ```
 /api/
 ├── devices/
-│   ├── status (GET)              - All devices
-│   └── {id} (GET)               - Device detail + lock status
+│   ├── status (GET)                 - All devices
+│   └── {id} (GET)                   - Device detail + lock status
 │
 ├── device/
-│   ├── control (POST)           - Turn ON/OFF + set lock duration (5-60m)
-│   └── override-duration (POST) - Update AI lock duration without re-toggling
+│   ├── control (POST)               - Turn ON/OFF + set lock (5-60m)
+│   └── override-duration (POST)     - Update AI lock without re-toggling
 │
-├── current-prediction (GET)     - Live RF model prediction
+├── voice/
+│   └── command (POST) 🎙️           - Natural language voice command
 │
-├── analytics (GET)              - System-wide statistics
+├── current-prediction (GET)         - Live RF model prediction
+├── analytics (GET)                  - System-wide statistics
 │
-├── history (GET)                - 14-day device log (two_week_logs)
-├── history/daily (GET)          - Daily aggregated ON counts
+├── history (GET)                    - 14-day device log
+├── history/daily (GET)              - Daily aggregated ON counts
 │
-├── notifications (GET)          - In-memory recent notifications
-├── notifications/24h (GET)      - Last 24h from SQLite DB (persistent)
-├── notifications/read-all (POST)- Mark all read (memory + DB)
+├── notifications (GET)              - In-memory recent notifications
+├── notifications/24h (GET)         - Last 24h from SQLite DB (persistent)
+├── notifications/read-all (POST)   - Mark all read
 ├── notifications/unread-count (GET) - Badge count
 │
-├── agent/status (GET)           - Live agent cycle trace + manual locks
+├── rules (GET/POST/PUT/DELETE)      - Temperature-based rule management
+│
+├── agent/status (GET)               - Live agent cycle trace + manual locks
+│
+├── settings/
+│   └── night-mode (GET/POST)        - Deep-night block on/off
+│
+├── home/
+│   └── status (GET/POST)            - Home / Away presence mode
 │
 └── system/
-    └── status (GET)             - Health check (DB type: SQLite)
+    └── status (GET)                 - Health check (DB: SQLite)
 ```
 
 ---
 
-## Component Interaction Sequence
+## 🎙️ Voice Input — Summary
+
+Voice input is processed by Gemini AI NLP. Full documentation: **[VOICE_INPUT.md](VOICE_INPUT.md)**
 
 ```
-User Interaction:
-├─ Opens http://localhost:3000
-├─ Frontend loads React app
-├─ Calls GET /api/devices/status
-├─ Displays device cards
-├─ Sets up WebSocket connection
-└─ Listens for real-time updates
-
-User Action (Toggle Device):
-├─ Clicks device ON button
-├─ Frontend calls POST /api/device/control
-├─ Backend receives request
-├─ Updates devices table in DB
-├─ Broadcasts update via WebSocket
-├─ Frontend receives update
-├─ UI refreshes instantly
-└─ Process repeats every action
-
-Background (Every 5 minutes):
-├─ Backend runs agent loop
-├─ Gets current temp/humidity
-├─ Processes all devices through agent
-├─ Updates device states
-├─ Logs decisions to DB
-├─ Broadcasts to all connected clients
-└─ Frontend updates in real-time
-
-Weekly (Retraining):
-├─ Check if enough data collected
-├─ Fetch training data from DB
-├─ Train new model
-├─ Evaluate performance
-├─ Save improved model
-├─ Log metrics
-└─ Continue serving predictions
+User types/speaks → /api/voice/command → Gemini 2.0 Flash parses command
+    → Device identified → State updated → 30-min override lock set
+    → Notification logged → Frontend updates
 ```
+
+**Supported devices**: AC, Fan, Light, TV, Fridge  
+**Supported actions**: ON, OFF, STATUS, ALL  
 
 ---
 
-This architecture provides:
-✅ **Scalability** - Horizontal scaling of backend
-✅ **Reliability** - SQLite file persistence (no DB server needed)
-✅ **Performance** - Indexed queries, in-memory notification cache
-✅ **Learning** - Continuous model improvement
-✅ **Real-time** - 5s polling for device states, 15s for notifications
-✅ **User Control** - Manual override with configurable 5–60 min AI lock
-✅ **Monitoring** - Full logging: agent_logs + notifications table in SQLite
-✅ **Notifications** - Persistent 24h event history (User Manual + AI Auto)
+## ⚡ Device Power Consumption
+
+| Device | Wattage |
+|--------|---------|
+| AC (Air Conditioner) | 2500 W |
+| Fan | 150 W |
+| Light | 100 W |
+| TV | 120 W |
+| Refrigerator (Fridge) | 200 W |
 
 ---
 
@@ -441,18 +341,97 @@ This architecture provides:
 - Zero configuration — no server, no install, runs on any machine
 - File-based: `home_automation.db` in project root
 - Python built-in `sqlite3` module (no extra dependencies)
-- Sufficient for FYP scale (~14 days × 5 devices = ~3,500 records)
+- Sufficient for FYP scale (~20 days × 5 devices = ~8,700+ records)
 
 **Tables:**
 
-| Table | Purpose | Key Columns |
-|---|---|---|
-| `two_week_logs` | 14-day device state history | device_id, device_name, timestamp, action, energy_wh |
-| `agent_logs` | AI agent autonomous decisions | device_id, action, confidence, reason, timestamp |
-| `notifications` | 24h event log (manual + AI) | device, action, reason, node, confidence, read, timestamp |
-| `custom_rules` | Temperature-based automation rules | device_id, temp_min, temp_max, action, enabled, description |
+| Table | Purpose | Key Columns | Current Data |
+|---|---|---|---|
+| `two_week_logs` | Rolling device state history | device_id, device_name, timestamp, action, energy_wh | 8,763 rows (Jun 1–20, 2026) |
+| `device_logs` | Per-event device log with temperature | device_name, timestamp, action, temperature, hour, energy_used | 8,763 rows (Jun 1–20, 2026) |
+| `agent_logs` | AI agent autonomous decisions | device_id, action, confidence, reason, timestamp | 152 rows |
+| `notifications` | 24h event log (manual + AI) | device, action, reason, node, confidence, read, timestamp | 187 rows |
+| `custom_rules` | Temperature-based automation rules | device_id, temp_min, temp_max, action, enabled, description | 7 rules |
+| `peak_hours` | Hourly energy usage aggregates | hour, energy_usage, is_peak | 24 rows (hours 15–18 are peak) |
+| `devices` | Device registry | id, name, type, status, energy_consumption | 5 devices |
+| `users` | User accounts | id, name, email, latitude, longitude | 2 users |
 
 **Override Lock System:**
 - Default AI lock after manual override: **30 minutes**
 - Configurable per device: **5 – 60 minutes** (slider in Device Control page)
-- Lock is stored in memory (`MANUAL_OVERRIDES` dict); notification is persisted to DB
+- Lock stored in memory (`MANUAL_OVERRIDES` dict); notification persisted to DB
+
+---
+
+## Continuous Learning Pipeline
+
+```
+DATA COLLECTION (ongoing)
+├─ Collect all device predictions
+├─ Track actual user actions
+├─ Record manual overrides
+└─ Store ground truth in two_week_logs
+
+RETRAINING TRIGGER (weekly)
+├─ Check: enough new data? > 1000 samples
+├─ Fetch training data from DB
+└─ Split train/test sets
+
+MODEL TRAINING
+├─ Train RandomForest on new data
+├─ Evaluate on test set
+├─ Compare to previous accuracy
+└─ Save improved model (model.pkl)
+
+FEEDBACK LOOP
+├─ Extract user preferences from overrides
+├─ Adjust rules based on patterns
+└─ Back to data collection
+```
+
+---
+
+## Component Interaction Sequence
+
+```
+User Action (Toggle Device):
+├─ Clicks device ON button
+├─ Frontend calls POST /api/device/control
+├─ Backend updates DEVICES dict
+├─ Refreshes device list → Frontend updates instantly
+└─ Notification logged to DB
+
+Background (Every 3 minutes):
+├─ Agent loop runs all 5 nodes
+├─ Gets current temp/humidity/sunrise/sunset
+├─ Processes all devices through agent
+├─ Updates device states
+├─ Logs decisions to DB
+└─ Frontend picks up changes on next 5s poll
+
+Voice Command:
+├─ User speaks → Web Speech API transcript
+├─ Frontend POSTs to /api/voice/command
+├─ Gemini AI parses device + action
+├─ Device state updated + 30-min lock set
+└─ Notification appears in real-time
+```
+
+---
+
+This architecture provides:
+✅ **Scalability** - Horizontal scaling of backend  
+✅ **Reliability** - SQLite file persistence (no DB server needed)  
+✅ **Performance** - Indexed queries, in-memory notification cache  
+✅ **Learning** - Continuous model improvement  
+✅ **Real-time** - 5s polling for device states, 3s for notifications  
+✅ **User Control** - Manual override with configurable 5–60 min AI lock  
+✅ **Monitoring** - Full logging: agent_logs + notifications table in SQLite  
+✅ **Voice Control** - Gemini AI NLP for natural language commands  
+✅ **Smart Rules** - Daylight block, deep-night block, home/away mode  
+
+---
+
+**Status**: ✅ Production Ready  
+**Last Updated**: 2026-06-21  
+**Maintained By**: Smart Home Development Team

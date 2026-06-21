@@ -9,7 +9,7 @@ echo.
 
 REM Start Backend
 echo Starting Backend (Port 8000^)...
-start "Backend - AI Home Automation" cmd /k "cd backend && venv\Scripts\activate.bat && python main.py"
+start "Backend - AI Home Automation" cmd /k "cd backend && ..\.venv\Scripts\activate.bat && python main.py"
 
 timeout /t 3 /nobreak
 

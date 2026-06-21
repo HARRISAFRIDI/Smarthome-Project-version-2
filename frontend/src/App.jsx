@@ -1,9 +1,187 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import './App.css';
 import AuthPage from './AuthPage';
 
 const API = 'http://localhost:8000/api';
 const DEVICE_ICONS = { AC: '❄️', Fan: '🌀', Light: '💡', TV: '📺', Fridge: '🧊' };
+
+// ── VoiceWidget ───────────────────────────────────────────────────
+const RESULT_ICONS = { AC: '❄️', Fan: '🌀', Light: '💡', TV: '📺', Refrigerator: '🧊', ALL: '🏠' };
+
+function VoiceWidget({ onCommandExecuted }) {
+  const [open, setOpen]             = useState(false);
+  const [listening, setListening]   = useState(false);
+  const [status, setStatus]         = useState('idle');
+  const [transcript, setTranscript] = useState('');
+  const [result, setResult]         = useState(null);
+  const [history, setHistory]       = useState([]);
+  const [textInput, setTextInput]   = useState('');
+  const [sending, setSending]       = useState(false);
+  const recognitionRef              = useRef(null);
+  const speechAvailable = 'webkitSpeechRecognition' in window || 'SpeechRecognition' in window;
+
+  const sendCommand = useCallback(async (text) => {
+    if (!text || !text.trim()) return;
+    setSending(true);
+    setStatus('processing');
+    setTranscript(text);
+    try {
+      const r = await fetch(`${API}/voice/command`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text }),
+      });
+      const data = await r.json();
+      setResult(data);
+      setStatus(data.success ? 'success' : 'error');
+      setHistory(prev => [{ text, ok: data.success, msg: data.message }, ...prev].slice(0, 10));
+      if (data.success && onCommandExecuted) onCommandExecuted();
+    } catch {
+      setResult({ success: false, message: 'Cannot reach backend.' });
+      setStatus('error');
+    }
+    setSending(false);
+    setTextInput('');
+  }, [onCommandExecuted]);
+
+  const startListening = useCallback(() => {
+    if (!speechAvailable) return;
+    const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+    const rec = new SR();
+    rec.lang = 'en-US';
+    rec.interimResults = true;
+    rec.maxAlternatives = 1;
+    let lastText = '';
+    rec.onstart  = () => { setListening(true); setStatus('listening'); setResult(null); setTranscript(''); };
+    rec.onresult = (e) => {
+      lastText = Array.from(e.results).map(r => r[0].transcript).join('');
+      setTranscript(lastText);
+    };
+    rec.onerror  = () => { setListening(false); setStatus('error'); };
+    rec.onend    = () => { setListening(false); if (lastText.trim()) sendCommand(lastText); else setStatus('idle'); };
+    recognitionRef.current = rec;
+    rec.start();
+  }, [speechAvailable, sendCommand]);
+
+  const stopListening = () => recognitionRef.current?.stop();
+
+  const statusLabel = {
+    idle:       '🎙️ Tap mic or type a command',
+    listening:  'Listening…',
+    processing: '🤖 AI is processing…',
+    success:    result?.message || 'Done!',
+    error:      result?.message || 'Try again.',
+  }[status];
+
+  const transcriptionClass = {
+    idle: '', listening: 'active', processing: 'active',
+    success: 'success', error: 'error',
+  }[status];
+
+  return (
+    <div className="voice-widget-wrapper">
+      {open && (
+        <div className="voice-widget-panel">
+          <div className="voice-widget-header">
+            <h4>🎙️ Voice Assistant</h4>
+            <div style={{ display:'flex', alignItems:'center', gap:'0.5rem' }}>
+              <span className={`status-dot ${speechAvailable ? 'online' : 'offline'}`} />
+              <span style={{ fontSize:'0.7rem', color:'rgba(255,255,255,0.5)' }}>
+                {speechAvailable ? 'Mic ready' : 'Text only'}
+              </span>
+            </div>
+          </div>
+
+          <div className="voice-widget-body">
+            {speechAvailable && (
+              <button
+                id="voice-mic-btn"
+                className={`widget-mic-btn ${listening ? 'recording' : ''}`}
+                onClick={listening ? stopListening : startListening}
+                disabled={sending}
+                title={listening ? 'Stop recording' : 'Start voice command'}
+              >
+                {listening ? '⏹' : '🎙️'}
+              </button>
+            )}
+
+            {listening && (
+              <div className="listening-dots">
+                <span /><span /><span />
+              </div>
+            )}
+
+            <div className={`widget-transcription ${transcriptionClass}`}>
+              {transcript && status !== 'idle'
+                ? <span>"{transcript}"</span>
+                : <span>{statusLabel}</span>
+              }
+            </div>
+
+            {result && (
+              <div className="voice-result-card">
+                <span className="voice-result-icon">
+                  {result.success ? (RESULT_ICONS[result.device] || '✅') : '❓'}
+                </span>
+                <div className="voice-result-body">
+                  <div className="voice-result-device">
+                    {result.device && result.device !== 'UNKNOWN'
+                      ? `${result.device} → ${result.action}`
+                      : 'Unknown command'}
+                  </div>
+                  <div className="voice-result-msg">{result.message}</div>
+                </div>
+              </div>
+            )}
+
+            <div className="voice-text-row">
+              <input
+                className="voice-text-input"
+                placeholder="Or type a command…"
+                value={textInput}
+                onChange={e => setTextInput(e.target.value)}
+                onKeyDown={e => e.key === 'Enter' && sendCommand(textInput)}
+                disabled={sending}
+              />
+              <button
+                className="voice-send-btn"
+                onClick={() => sendCommand(textInput)}
+                disabled={sending || !textInput.trim()}
+              >
+                {sending ? '…' : '→'}
+              </button>
+            </div>
+
+            {history.length > 0 && (
+              <div className="voice-history">
+                {history.map((h, i) => (
+                  <div key={i} className="vh-item">
+                    <span className="vh-cmd" title={h.text}>{h.text}</span>
+                    <span className={h.ok ? 'vh-ok' : 'vh-fail'}>{h.ok ? '✓' : '✗'}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+          <div className="voice-widget-footer">
+            Powered by Gemini AI · Say "turn on AC" or "lights off"
+          </div>
+        </div>
+      )}
+
+      <button
+        id="voice-widget-fab"
+        className={`voice-widget-btn ${open ? 'active' : ''}`}
+        onClick={() => { setOpen(o => !o); setStatus('idle'); setResult(null); }}
+        title="Voice Command Assistant"
+      >
+        {open ? '✕' : '🎙️'}
+      </button>
+    </div>
+  );
+}
+
 
 // ── Sidebar ──────────────────────────────────────────────────────
 function Sidebar({ page, setPage, unread, user, onLogout }) {
@@ -181,6 +359,116 @@ function HomeAwayCard({ isHome, onToggle }) {
   );
 }
 
+// ── SunriseSunset Card ───────────────────────────────────────────
+function SunriseSunsetCard({ weather }) {
+  const sunrise = weather?.sunrise;   // "05:12"
+  const sunset  = weather?.sunset;    // "19:47"
+  const city    = weather?.city;
+
+  // Compute daylight progress (0–1) from current local time vs sunrise/sunset
+  const now = new Date();
+  const pct = (() => {
+    if (!sunrise || !sunset) return null;
+    const toMins = t => { const [h,m] = t.split(':').map(Number); return h*60+m; };
+    const nowMins = now.getHours()*60 + now.getMinutes();
+    const sr = toMins(sunrise), ss = toMins(sunset);
+    if (nowMins <= sr) return 0;
+    if (nowMins >= ss) return 1;
+    return (nowMins - sr) / (ss - sr);
+  })();
+
+  // Arc path for SVG progress
+  const arcPath = (ratio) => {
+    if (ratio === null) return '';
+    const r = 60, cx = 80, cy = 75;
+    const startAngle = Math.PI;                     // left (sunrise)
+    const endAngle   = startAngle + ratio * Math.PI; // goes right → top → right
+    const x1 = cx + r * Math.cos(startAngle);
+    const y1 = cy + r * Math.sin(startAngle);
+    const x2 = cx + r * Math.cos(endAngle);
+    const y2 = cy + r * Math.sin(endAngle);
+    const large = ratio > 0.5 ? 1 : 0;
+    return `M ${x1} ${y1} A ${r} ${r} 0 ${large} 1 ${x2} ${y2}`;
+  };
+
+  // Sun ball position along arc
+  const sunPos = pct !== null ? (() => {
+    const r = 60, cx = 80, cy = 75;
+    const angle = Math.PI + pct * Math.PI;
+    return { x: cx + r * Math.cos(angle), y: cy + r * Math.sin(angle) };
+  })() : null;
+
+  const daylight = (() => {
+    if (!sunrise || !sunset) return null;
+    const toMins = t => { const [h,m] = t.split(':').map(Number); return h*60+m; };
+    const mins = toMins(sunset) - toMins(sunrise);
+    return `${Math.floor(mins/60)}h ${mins%60}m`;
+  })();
+
+  return (
+    <div className="sun-card">
+      <div className="sun-card-header">
+        <span className="sun-card-title">☀️ Solar Day{city ? ` · ${city}` : ''}</span>
+        <span className="sun-card-source">RapidAPI · Live</span>
+      </div>
+
+      <div className="sun-arc-wrap">
+        <svg viewBox="0 0 160 90" className="sun-svg">
+          {/* Background track */}
+          <path
+            d="M 20 75 A 60 60 0 0 1 140 75"
+            fill="none" stroke="rgba(255,255,255,0.08)" strokeWidth="6" strokeLinecap="round"
+          />
+          {/* Daylight progress arc */}
+          {pct !== null && pct > 0 && (
+            <path
+              d={arcPath(pct)}
+              fill="none"
+              stroke="url(#sunGrad)"
+              strokeWidth="6"
+              strokeLinecap="round"
+            />
+          )}
+          <defs>
+            <linearGradient id="sunGrad" x1="0%" y1="0%" x2="100%" y2="0%">
+              <stop offset="0%"   stopColor="#FFD740" />
+              <stop offset="100%" stopColor="#FF8C00" />
+            </linearGradient>
+          </defs>
+          {/* Horizon line */}
+          <line x1="15" y1="75" x2="145" y2="75" stroke="rgba(255,255,255,0.12)" strokeWidth="1" />
+          {/* Sun ball */}
+          {sunPos && (
+            <circle cx={sunPos.x} cy={sunPos.y} r="7" fill="#FFD740">
+              <animate attributeName="r" values="7;8.5;7" dur="2s" repeatCount="indefinite" />
+            </circle>
+          )}
+          {/* Sunrise dot */}
+          <circle cx="20" cy="75" r="3.5" fill="#FF8C00" />
+          {/* Sunset dot */}
+          <circle cx="140" cy="75" r="3.5" fill="#FF5252" />
+        </svg>
+
+        <div className="sun-times-row">
+          <div className="sun-time-block">
+            <span className="sun-icon-label">🌅</span>
+            <span className="sun-time">{sunrise || '—'}</span>
+            <span className="sun-label">Sunrise</span>
+          </div>
+          <div className="sun-daylight">
+            {daylight && <><div className="sun-daylight-val">{daylight}</div><div className="sun-daylight-lbl">daylight</div></>}
+          </div>
+          <div className="sun-time-block">
+            <span className="sun-icon-label">🌇</span>
+            <span className="sun-time">{sunset || '—'}</span>
+            <span className="sun-label">Sunset</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ── Pages ─────────────────────────────────────────────────────────
 
 function DashboardPage({ devices, systemStatus, weather, isHome, onHomeToggle }) {
@@ -206,7 +494,13 @@ function DashboardPage({ devices, systemStatus, weather, isHome, onHomeToggle })
         <StatCard icon="🤖" label="AI Accuracy"      value={`${(acc*100).toFixed(1)}%`}    sub="RandomForest" accent="#00E676" />
         <StatCard icon="🌡️" label="Live Temperature" value={tempDisplay}                   sub={weatherDesc || 'OpenWeather API'} accent="#FFD740" />
       </div>
-      {weatherCity && (
+
+      {/* ── Sunrise / Sunset live card ── */}
+      {(weather?.sunrise || weather?.sunset || weatherCity) && (
+        <SunriseSunsetCard weather={weather} />
+      )}
+
+      {weatherCity && !weather?.sunrise && (
         <div className="weather-banner">
           <span>🌤️</span>
           <span><strong>{weatherCity}</strong> — {weatherDesc} · {tempDisplay} · Source: RapidAPI OpenWeather</span>
@@ -301,6 +595,218 @@ function PredictionsPage() {
   );
 }
 
+// ── ElectricityBillCard ──────────────────────────────────────────
+const DEVICE_ICONS_BILL = { AC: '❄️', Fan: '🌀', Light: '💡', TV: '📺', Refrigerator: '🧊', Fridge: '🧊' };
+
+function ElectricityBillCard() {
+  const [bill, setBill]           = useState(null);
+  const [loading, setLoading]     = useState(true);
+  const [target, setTarget]       = useState(() => {
+    const s = localStorage.getItem('hs_bill_target');
+    return s ? Number(s) : 200;
+  });
+  const [editTarget, setEditTarget] = useState(false);
+  const [tmpTarget, setTmpTarget]   = useState(200);
+
+  const fetchBill = useCallback(async (t) => {
+    try {
+      const r = await fetch(`${API}/electricity/bill?target_units=${t || target}`);
+      const d = await r.json();
+      setBill(d);
+    } catch { /* ignore */ }
+    setLoading(false);
+  }, [target]);
+
+  useEffect(() => {
+    fetchBill();
+    const t = setInterval(() => fetchBill(), 60000);
+    return () => clearInterval(t);
+  }, [fetchBill]);
+
+  const applyTarget = () => {
+    const val = Math.max(50, Math.min(2000, Number(tmpTarget) || 200));
+    setTarget(val);
+    localStorage.setItem('hs_bill_target', String(val));
+    setEditTarget(false);
+    setLoading(true);
+    fetchBill(val);
+  };
+
+  const pct    = bill ? Math.min(bill.pct_of_target, 100) : 0;
+  const warnColor = pct < 50 ? 'var(--green)' : pct < 80 ? 'var(--amber)' : 'var(--red)';
+  const warnLabel = pct < 50
+    ? '✅ Usage is healthy — well within target'
+    : pct < 80
+    ? '⚠️ Moderate usage — monitor your consumption'
+    : '🔴 High electricity usage detected. Consider reducing appliance usage.';
+
+  if (loading) return (
+    <div className="bill-card">
+      <div className="bill-header"><span>⚡</span><span>Current Month Electricity Bill</span></div>
+      <div style={{ display:'flex', justifyContent:'center', padding:'2rem' }}><div className="spinner" /></div>
+    </div>
+  );
+
+  if (!bill) return null;
+
+  const bp = bill.billing_period;
+  const fmtDate = s => { const d = new Date(s); return d.toLocaleDateString('en-PK', { day:'numeric', month:'long', year:'numeric' }); };
+
+  return (
+    <div className="bill-card">
+      {/* Header */}
+      <div className="bill-header">
+        <div className="bill-header-left">
+          <span className="bill-header-icon">⚡</span>
+          <div>
+            <div className="bill-title">Current Month Electricity Bill</div>
+            <div className="bill-period">
+              {fmtDate(bp.start)} — {fmtDate(bp.end)}
+              &nbsp;·&nbsp;{bp.days_passed} of {bp.days_in_month} days
+            </div>
+          </div>
+        </div>
+        <div className="bill-total-badge">Rs. {bill.current_bill_rs.toLocaleString()}</div>
+      </div>
+
+      <div className="bill-body">
+        {/* Left column: units + breakdown */}
+        <div className="bill-col-left">
+          <div className="bill-units-row">
+            <div className="bill-units-big">{bill.total_units_kwh} <span>kWh</span></div>
+            <div className="bill-units-sub">Total units consumed this month</div>
+          </div>
+
+          {/* Slab breakdown */}
+          <div className="bill-breakdown-box">
+            <div className="bill-breakdown-title">📋 Bill Breakdown</div>
+            <table className="bill-table">
+              <thead>
+                <tr>
+                  <th>Slab</th>
+                  <th>Units</th>
+                  <th>Rate</th>
+                  <th>Amount</th>
+                </tr>
+              </thead>
+              <tbody>
+                {bill.bill_breakdown.map((row, i) => (
+                  <tr key={i}>
+                    <td>{row.slab}</td>
+                    <td>{row.units}</td>
+                    <td>Rs. {row.rate}/u</td>
+                    <td className="bill-amt">Rs. {row.amount.toLocaleString()}</td>
+                  </tr>
+                ))}
+              </tbody>
+              <tfoot>
+                <tr className="bill-total-row">
+                  <td colSpan={3}>Total Estimated Bill</td>
+                  <td className="bill-grand-total">Rs. {bill.current_bill_rs.toLocaleString()}</td>
+                </tr>
+              </tfoot>
+            </table>
+          </div>
+
+          {/* Per-device breakdown */}
+          <div className="bill-devices-box">
+            <div className="bill-breakdown-title">🔌 Per-Device Usage</div>
+            {bill.device_breakdown.map((d, i) => {
+              const share = bill.total_units_kwh > 0 ? (d.kwh / bill.total_units_kwh * 100) : 0;
+              return (
+                <div key={i} className="bill-device-row">
+                  <span className="bill-dev-icon">{DEVICE_ICONS_BILL[d.device] || '🔧'}</span>
+                  <span className="bill-dev-name">{d.device}</span>
+                  <div className="bill-dev-bar-wrap">
+                    <div className="bill-dev-bar" style={{ width: `${share}%` }} />
+                  </div>
+                  <span className="bill-dev-kwh">{d.kwh} kWh</span>
+                  <span className="bill-dev-rs">Rs. {d.rs.toLocaleString()}</span>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+
+        {/* Right column: progress + projection */}
+        <div className="bill-col-right">
+          {/* Target input */}
+          <div className="bill-target-box">
+            <div className="bill-target-label">
+              Monthly Target
+              <button className="bill-edit-btn" onClick={() => { setTmpTarget(target); setEditTarget(e => !e); }}>✏️</button>
+            </div>
+            {editTarget ? (
+              <div className="bill-target-edit">
+                <input
+                  type="number" min={50} max={2000} step={10}
+                  value={tmpTarget}
+                  onChange={e => setTmpTarget(e.target.value)}
+                  className="bill-target-input"
+                />
+                <span className="bill-target-unit">units</span>
+                <button className="bill-apply-btn" onClick={applyTarget}>Apply</button>
+              </div>
+            ) : (
+              <div className="bill-target-val">{target} <span>units</span></div>
+            )}
+          </div>
+
+          {/* Progress bar */}
+          <div className="bill-progress-section">
+            <div className="bill-progress-labels">
+              <span>{bill.total_units_kwh} kWh used</span>
+              <span style={{ color: warnColor }}>{pct.toFixed(1)}%</span>
+            </div>
+            <div className="bill-progress-track">
+              <div
+                className="bill-progress-fill"
+                style={{ width: `${pct}%`, background: warnColor }}
+              />
+            </div>
+            <div className="bill-progress-ticks">
+              <span>0</span>
+              <span style={{marginLeft:'50%', transform:'translateX(-50%)'}}>50%</span>
+              <span>100%</span>
+            </div>
+          </div>
+
+          {/* Warning badge */}
+          <div className="bill-warning-badge" style={{ borderColor: warnColor, color: warnColor, background: `${warnColor}18` }}>
+            {warnLabel}
+          </div>
+
+          {/* Daily avg + projection */}
+          <div className="bill-projection-box">
+            <div className="bill-proj-title">📈 Projection</div>
+            <div className="bill-proj-row">
+              <span>Avg Daily Usage</span>
+              <strong>{bill.avg_daily_kwh} kWh / day</strong>
+            </div>
+            <div className="bill-proj-row">
+              <span>Days Remaining</span>
+              <strong>{bp.days_remaining} days</strong>
+            </div>
+            <div className="bill-proj-row bill-proj-highlight">
+              <span>Projected End-of-Month</span>
+              <strong>{bill.projected_monthly_kwh} kWh</strong>
+            </div>
+            <div className="bill-proj-row bill-proj-total">
+              <span>Projected Total Bill</span>
+              <strong>Rs. {bill.projected_monthly_bill_rs.toLocaleString()}</strong>
+            </div>
+          </div>
+
+          {/* Refresh info */}
+          <div className="bill-footer">
+            Source: {bill.data_source} · Auto-refreshes every 60s
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function AnalyticsPage({ analytics }) {
   const [daily, setDaily] = useState(null);
   const [summary, setSummary] = useState(null);
@@ -330,6 +836,9 @@ function AnalyticsPage({ analytics }) {
       <div className="page-header">
         <h1 className="page-title">Analytics <span className="title-chip">14 DAYS</span></h1>
       </div>
+
+      {/* ── Electricity Bill Estimator ── */}
+      <ElectricityBillCard />
       {summary && (
         <div className="ana-sum-grid">
           {summary.map(s => (
@@ -386,7 +895,7 @@ function AnalyticsPage({ analytics }) {
                   <div className="acc-bar"><div className="acc-fill" style={{width:`${d.avg_accuracy*100}%`}} /></div>
                   {(d.avg_accuracy*100).toFixed(1)}%
                 </span>
-                <span>{d.energy_total?.toFixed(0)} kWh</span>
+                <span>{d.energy_total?.toFixed(1)} kWh</span>
               </div>
             ))}
           </div>
@@ -607,7 +1116,7 @@ export default function App() {
     )).then(results => {
       const mapped = results.filter(Boolean).map(d => ({
         id: d.device_id, name: d.device_name, type: d.type, status: d.status,
-        energy_consumption: [2500,150,100,200,500][d.device_id-1],
+        energy_consumption: [1200,30,20,200,400][d.device_id-1],
         manually_locked: d.manually_locked,
         lock_minutes_remaining: d.lock_minutes_remaining,
       }));
@@ -731,6 +1240,8 @@ export default function App() {
         {page==='notifications' && <NotificationsPage onMarkRead={()=>setUnread(0)} />}
         {page==='settings'      && <SettingsPage systemStatus={systemStatus} weather={weather} user={user} nightMode={nightMode} onNightModeToggle={handleNightModeToggle} />}
       </main>
+      {/* ── Floating Voice Assistant ── */}
+      <VoiceWidget onCommandExecuted={() => { refreshDevices(); refreshUnread(); }} />
     </div>
   );
 }
